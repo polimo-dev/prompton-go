@@ -14,7 +14,7 @@ mix run scripts/gen_conformance.exs
 ```
 
 The Elixir SDK is the reference implementation, and the PromptOn server reuses its pure modules
-(`SnapshotData`, `Resolver`, `Template`, `StopKind`) directly, so these fixtures also describe the
+(`UseCaseDocument`, `Resolver`, `Template`, `StopKind`) directly, so these fixtures also describe the
 server. `test/prompton_sdk/conformance_test.exs` runs every case back through the SDK, which is
 what keeps the files from drifting.
 
