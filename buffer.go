@@ -45,13 +45,21 @@ type BufferStats struct {
 	DroppedClientError int
 	// DroppedRetriesExhausted is how many were dropped after the attempt bound.
 	DroppedRetriesExhausted int
-	// Failures is the number of consecutive send failures.
+	// DroppedAfterClose is how many were rejected because the client was
+	// already closed. Log reports that one as an error too.
+	DroppedAfterClose int
+	// Failures is the highest number of consecutive send failures any one
+	// environment is carrying; zero when every environment's last send
+	// succeeded.
 	Failures int
 }
 
 type queuedRecord struct {
 	record map[string]interface{}
 	bytes  int
+	// seq orders records across environments, so the queue bound drops the
+	// genuinely oldest record rather than whichever environment sorts first.
+	seq uint64
 }
 
 type logBatch struct {
@@ -59,14 +67,26 @@ type logBatch struct {
 	attempts int
 }
 
+func (b logBatch) byteSize() int {
+	total := 0
+	for _, r := range b.records {
+		total += r.bytes
+	}
+	return total
+}
+
 // lane is one environment's queue. Batches are per environment because the
 // endpoint forces the environment onto everything in a request.
 type lane struct {
 	// ready holds batches that must be sent as they are: a batch being retried
 	// with the same ids, or the halves of one split after a 413.
-	ready   []logBatch
-	pending []queuedRecord
-	bytes   int
+	ready []logBatch
+	// readyBytes and pendingBytes are tracked apart so a batch that goes back
+	// onto ready after a failed send restores its bytes exactly, and the flush
+	// trigger keeps measuring what is still accumulating.
+	readyBytes   int
+	pending      []queuedRecord
+	pendingBytes int
 	// blockedUntil is when this lane may contact the server again. Until then
 	// the previous batch stays queued and later records queue behind it.
 	blockedUntil time.Time
@@ -79,6 +99,7 @@ type logBuffer struct {
 	mu     sync.Mutex
 	lanes  map[string]*lane
 	stats  BufferStats
+	seq    uint64
 	closed bool
 
 	wake     chan struct{}
@@ -109,25 +130,30 @@ func (b *logBuffer) laneFor(env string) *lane {
 	return l
 }
 
-// enqueue adds one record and returns immediately.
-func (b *logBuffer) enqueue(env string, record map[string]interface{}) {
+// enqueue adds one record and returns immediately. A record the buffer will
+// never send is counted, and only the closed case is reported back: it is the
+// one where the caller can still do something about it.
+func (b *logBuffer) enqueue(env string, record map[string]interface{}) error {
 	size := jsonSize(record)
 	b.mu.Lock()
 	if b.closed {
+		b.stats.DroppedAfterClose++
 		b.mu.Unlock()
-		return
+		b.client.warnOnce("log-closed", "dropping a monitoring log: the client is closed")
+		return ErrClosed
 	}
 	if size > maxBatchBytes {
 		b.stats.DroppedTooLarge++
 		b.mu.Unlock()
 		b.client.warnOnce("log-too-large", "dropping a %d-byte monitoring log: one record cannot exceed %d bytes", size, maxBatchBytes)
-		return
+		return nil
 	}
+	b.seq++
 	l := b.laneFor(env)
-	l.pending = append(l.pending, queuedRecord{record: record, bytes: size})
-	l.bytes += size
+	l.pending = append(l.pending, queuedRecord{record: record, bytes: size, seq: b.seq})
+	l.pendingBytes += size
 	overflow := b.trimToBound()
-	trigger := len(l.pending) >= b.client.cfg.LogFlushSize || l.bytes >= b.client.cfg.LogFlushBytes
+	trigger := len(l.pending) >= b.client.cfg.LogFlushSize || l.pendingBytes >= b.client.cfg.LogFlushBytes
 	b.mu.Unlock()
 
 	if overflow > 0 {
@@ -136,11 +162,11 @@ func (b *logBuffer) enqueue(env string, record map[string]interface{}) {
 	if trigger {
 		b.nudge()
 	}
+	return nil
 }
 
-// trimToBound enforces the queue bound by dropping the oldest records of the
-// first non-empty lane — which, for the single-environment case every app has,
-// is simply the oldest records. Callers hold the lock.
+// trimToBound enforces the queue bound by dropping the oldest record in the
+// buffer, whichever environment holds it. Callers hold the lock.
 func (b *logBuffer) trimToBound() int {
 	limit := b.client.cfg.LogMaxBuffer
 	dropped := 0
@@ -152,6 +178,7 @@ func (b *logBuffer) trimToBound() int {
 		if len(oldest.ready) > 0 {
 			batch := oldest.ready[0]
 			if len(batch.records) > 0 {
+				oldest.readyBytes -= batch.records[0].bytes
 				batch.records = batch.records[1:]
 				dropped++
 				if len(batch.records) == 0 {
@@ -167,7 +194,7 @@ func (b *logBuffer) trimToBound() int {
 		if len(oldest.pending) == 0 {
 			break
 		}
-		oldest.bytes -= oldest.pending[0].bytes
+		oldest.pendingBytes -= oldest.pending[0].bytes
 		oldest.pending = oldest.pending[1:]
 		dropped++
 	}
@@ -183,18 +210,38 @@ func (b *logBuffer) totalQueuedLocked() int {
 	return total
 }
 
+// oldestLaneLocked is the lane whose head record was enqueued first. Records
+// carry an enqueue sequence precisely so that drop-oldest stays drop-oldest
+// once a process logs to two environments.
 func (b *logBuffer) oldestLaneLocked() *lane {
 	var pick *lane
+	var pickSeq uint64
 	for _, name := range b.laneNamesLocked() {
 		l := b.lanes[name]
-		if l.count() == 0 {
+		seq, ok := l.headSeq()
+		if !ok {
 			continue
 		}
-		if pick == nil {
+		if pick == nil || seq < pickSeq {
 			pick = l
+			pickSeq = seq
 		}
 	}
 	return pick
+}
+
+// headSeq is the enqueue sequence of the lane's oldest queued record. Ready
+// batches always hold records taken from pending earlier, so they come first.
+func (l *lane) headSeq() (uint64, bool) {
+	for _, batch := range l.ready {
+		if len(batch.records) > 0 {
+			return batch.records[0].seq, true
+		}
+	}
+	if len(l.pending) > 0 {
+		return l.pending[0].seq, true
+	}
+	return 0, false
 }
 
 func (b *logBuffer) laneNamesLocked() []string {
@@ -226,6 +273,14 @@ func (b *logBuffer) snapshotStats() BufferStats {
 	defer b.mu.Unlock()
 	out := b.stats
 	out.Queued = b.totalQueuedLocked()
+	// Failures belongs to a lane, not to the buffer: a success on one
+	// environment must not report health while another is still backing off.
+	out.Failures = 0
+	for _, l := range b.lanes {
+		if l.failures > out.Failures {
+			out.Failures = l.failures
+		}
+	}
 	return out
 }
 
@@ -350,9 +405,10 @@ func (b *logBuffer) takeBatch(env string, force bool) (logBatch, bool) {
 	if len(l.ready) > 0 {
 		batch := l.ready[0]
 		l.ready = l.ready[1:]
+		l.readyBytes -= batch.byteSize()
 		return batch, true
 	}
-	if !force && len(l.pending) < b.client.cfg.LogFlushSize && l.bytes < b.client.cfg.LogFlushBytes {
+	if !force && len(l.pending) < b.client.cfg.LogFlushSize && l.pendingBytes < b.client.cfg.LogFlushBytes {
 		return logBatch{}, false
 	}
 	var batch logBatch
@@ -364,7 +420,7 @@ func (b *logBuffer) takeBatch(env string, force bool) (logBatch, bool) {
 		}
 		batch.records = append(batch.records, next)
 		total += next.bytes
-		l.bytes -= next.bytes
+		l.pendingBytes -= next.bytes
 		l.pending = l.pending[1:]
 	}
 	if len(batch.records) == 0 {
@@ -390,7 +446,6 @@ func (b *logBuffer) send(ctx context.Context, env string, batch logBatch) {
 			l.failures = 0
 			l.blockedUntil = time.Time{}
 		}
-		b.stats.Failures = 0
 		b.mu.Unlock()
 		if len(result.Rejected) > 0 {
 			// Partial acceptance: one bad record never fails the batch, and an
@@ -424,6 +479,7 @@ func (b *logBuffer) handleSendError(env string, batch logBatch, err error) {
 			{records: batch.records[:half], attempts: batch.attempts},
 			{records: batch.records[half:], attempts: batch.attempts},
 		}, l.ready...)
+		l.readyBytes += batch.byteSize()
 		b.mu.Unlock()
 		b.nudge()
 		return
@@ -457,13 +513,13 @@ func (b *logBuffer) handleSendError(env string, batch logBatch, err error) {
 	b.mu.Lock()
 	l := b.laneFor(env)
 	l.failures++
-	b.stats.Failures = l.failures
 	delay := retryAfter
 	if delay <= 0 {
 		delay = backoffDelay(logBackoffMin, logBackoffMax, batch.attempts)
 	}
 	l.blockedUntil = b.client.cfg.now().Add(delay)
 	l.ready = append([]logBatch{batch}, l.ready...)
+	l.readyBytes += batch.byteSize()
 	b.trimToBound()
 	b.mu.Unlock()
 	b.client.warnOnce("log-retry", "monitoring log send failed (%v); retrying the same batch in %s", err, delay.Round(time.Millisecond))

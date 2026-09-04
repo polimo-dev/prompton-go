@@ -32,3 +32,24 @@ Initial release.
   hook that runs last.
 - `ModeTest` (no HTTP, logs captured in memory) and `ModeOffline` (disk and bundle only).
 - The cross-language conformance suite in `testdata/conformance`, executed by `go test ./...`.
+
+Fixed before release, after an adversarial review:
+
+- The canonical JSON encoder substitutes `U+FFFD` for a byte that is not valid UTF-8 instead of
+  copying it to the wire. One truncated character from a provider used to make the server refuse
+  the whole request body, which dropped up to 200 monitoring logs as a non-retryable `4xx`; the
+  batch now stays parseable and only the offending record can be rejected.
+- The in-memory log capture of test mode, offline mode and a live client with no API key honours
+  `LogMaxBuffer`, dropping the oldest and counting it in `BufferStats().DroppedOverflow`. A missing
+  `PTN_API_KEY` is a configuration mistake to ride out, not an out-of-memory kill.
+- A local `Resolve` refuses `WithEnvironment` for anything but the client's own environment with an
+  `ErrEnvironmentMismatch` `ResolveError` naming both, instead of silently answering from the
+  document it holds. `ResolveRemote` still honours the option.
+- A snapshot that names no environment or project is refused like a mismatched one, so an
+  unlabelled hand-assembled bundle cannot boot every process.
+- `Log` after `Close` returns `ErrClosed` and counts `BufferStats().DroppedAfterClose` — in every
+  mode, whether the record would have been sent or captured — matching what `Flush` already did,
+  instead of discarding the record silently.
+- The queue bound drops the genuinely oldest record across environments, `BufferStats().Failures`
+  reports the worst environment rather than whichever lane finished last, and a batch requeued
+  after a failed send restores its bytes to the lane so the byte flush trigger stays accurate.

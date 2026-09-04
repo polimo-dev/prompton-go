@@ -30,6 +30,12 @@ var (
 	// is the normal state of an embedding use case.
 	ErrNoTemplate = errors.New("prompton: use case has no prompt template")
 
+	// ErrEnvironmentMismatch means a local resolve asked for an environment
+	// other than the one the loaded document belongs to. Local resolution reads
+	// one document and cannot answer for another environment; answering from
+	// the wrong one silently is exactly the accident the guard prevents.
+	ErrEnvironmentMismatch = errors.New("prompton: resolve asked for another environment")
+
 	// ErrClosed is returned by a client whose Close has already run.
 	ErrClosed = errors.New("prompton: client is closed")
 
@@ -38,13 +44,19 @@ var (
 )
 
 // ResolveError is a resolution failure. Code is one of "unknown_use_case",
-// "unresolved" or "unknown_prompt", matching the reason the server reports in
-// the details of its 404.
+// "unresolved", "unknown_prompt" — matching the reason the server reports in
+// the details of its 404 — or "environment_mismatch", which only local
+// resolution can produce.
 type ResolveError struct {
 	Code             string
 	UseCase          string
 	Prompt           string
 	AvailablePrompts []string
+
+	// Environment and DocumentEnvironment are set for "environment_mismatch":
+	// what the call asked for, and what the loaded document actually holds.
+	Environment         string
+	DocumentEnvironment string
 }
 
 func (e *ResolveError) Error() string {
@@ -56,6 +68,10 @@ func (e *ResolveError) Error() string {
 	case "unknown_prompt":
 		return fmt.Sprintf("prompton: use case %q pins no prompt named %q (available: %s)",
 			e.UseCase, e.Prompt, strings.Join(e.AvailablePrompts, ", "))
+	case "environment_mismatch":
+		return fmt.Sprintf("prompton: resolve asked for environment %q but this client reads %q; "+
+			"use ResolveRemote, or a second client configured for %q",
+			e.Environment, e.DocumentEnvironment, e.Environment)
 	default:
 		return "prompton: " + e.Code
 	}
@@ -70,6 +86,8 @@ func (e *ResolveError) Unwrap() error {
 		return ErrUnresolved
 	case "unknown_prompt":
 		return ErrUnknownPrompt
+	case "environment_mismatch":
+		return ErrEnvironmentMismatch
 	}
 	return nil
 }

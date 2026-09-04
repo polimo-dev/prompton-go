@@ -41,7 +41,7 @@ TTL every resolve is served from memory with no HTTP call. Past it a conditional
 refresh runs in the background, and it never blocks or fails a generation: while
 it is in flight, and if it fails, the previous document is served. A rate limit
 is waited out, a 5xx is backed off, and a document for another environment or
-project is never used.
+project — or one that names neither — is never used.
 
 # Monitoring logs
 

@@ -1,7 +1,9 @@
 package prompton
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -9,6 +11,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestConfigPrecedenceExplicitOverEnvOverDefault(t *testing.T) {
@@ -354,5 +357,98 @@ func TestCanonicalJSONSortsKeysAndSkipsHTMLEscaping(t *testing.T) {
 	got := string(canonicalJSON(map[string]interface{}{"b": 1, "a": "<&>"}))
 	if got != `{"a":"<&>","b":1}` {
 		t.Fatalf("canonical JSON %s", got)
+	}
+}
+
+// A provider can hand back a byte that is not valid UTF-8 — a multi-byte
+// character truncated by a token limit, a mangled tool argument. The server
+// parses the request body as UTF-8 and refuses the whole thing if any of it is
+// not, so the encoder substitutes U+FFFD and keeps the batch parseable: the one
+// bad record can then be rejected on its own, which is what the contract says
+// happens.
+func TestCanonicalJSONSubstitutesInvalidUTF8(t *testing.T) {
+	cases := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{"valid ascii", "hello", `"hello"`},
+		{"valid multi-byte", "안녕 ☃", `"안녕 ☃"`},
+		{"lone continuation byte", "x\xffy", "\"x�y\""},
+		{"truncated multi-byte", "x\xed\xa0y", "\"x��y\""},
+		{"invalid at the end", "x\xfe", "\"x�\""},
+		{"only invalid bytes", "\xff\xfe", "\"��\""},
+		{"control characters are escaped", "a\nb\x01", `"a\nb\u0001"`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := string(canonicalJSON(tc.value))
+			if got != tc.want {
+				t.Fatalf("canonical JSON %q, want %q", got, tc.want)
+			}
+			if !utf8.ValidString(got) {
+				t.Fatal("the encoder emitted invalid UTF-8")
+			}
+			if !json.Valid([]byte(got)) {
+				t.Fatalf("the encoder emitted unparseable JSON: %q", got)
+			}
+		})
+	}
+}
+
+func TestResolveRefusesAnEnvironmentOtherThanTheClients(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
+	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetSnapshot: %v", err)
+	}
+
+	_, err := c.Resolve(testContext(t), "greeting", WithEnvironment("staging"))
+	if !errors.Is(err, ErrEnvironmentMismatch) {
+		t.Fatalf("a local resolve must refuse another environment, got %v", err)
+	}
+	var re *ResolveError
+	if !errors.As(err, &re) || re.Environment != "staging" || re.DocumentEnvironment != "production" {
+		t.Fatalf("the mismatch must name both environments: %+v", err)
+	}
+
+	// The client's own environment is accepted, and so is saying nothing.
+	if _, err := c.Resolve(testContext(t), "greeting", WithEnvironment("production")); err != nil {
+		t.Fatalf("resolve for the client's own environment: %v", err)
+	}
+	if _, err := c.Resolve(testContext(t), "greeting"); err != nil {
+		t.Fatalf("resolve without an environment: %v", err)
+	}
+
+	// The pure resolver guards on the document it was handed.
+	snap, err := ParseSnapshot([]byte(testSnapshotJSON))
+	if err != nil {
+		t.Fatalf("ParseSnapshot: %v", err)
+	}
+	if _, err := Resolve(snap, "greeting", WithEnvironment("staging")); !errors.Is(err, ErrEnvironmentMismatch) {
+		t.Fatalf("Resolve must refuse another environment, got %v", err)
+	}
+}
+
+func TestResolveRemoteStillHonoursWithEnvironment(t *testing.T) {
+	var asked atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var req map[string]interface{}
+		_ = decodeJSON(body, &req)
+		env, _ := req["environment"].(string)
+		asked.Store(env)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(resolveBody))
+	}))
+	defer srv.Close()
+
+	c := newTestClient(t, Config{
+		Host: srv.URL, APIKey: "ptn_sdkfixture_test", Environment: "production", Mode: ModeTest,
+	})
+	if _, err := c.ResolveRemote(testContext(t), "greeting", WithEnvironment("staging")); err != nil {
+		t.Fatalf("ResolveRemote: %v", err)
+	}
+	if got, _ := asked.Load().(string); got != "staging" {
+		t.Fatalf("the server was asked for environment %q, want staging", got)
 	}
 }

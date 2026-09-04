@@ -2,10 +2,12 @@ package prompton
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func newLoggingClient(t *testing.T, server *snapshotServer, tweak func(*Config)) (*Client, *fakeClock) {
@@ -531,5 +533,222 @@ func TestSnapshotPayloadPolicyTruncatesBeforeSending(t *testing.T) {
 	}
 	if !strings.Contains(text, "[truncated ") {
 		t.Fatalf("the truncation marker is missing from %q…", text[:40])
+	}
+}
+
+// A record can carry a byte that is not valid UTF-8: a multi-byte character a
+// token limit cut in half, a mangled tool argument. The server parses the whole
+// request body as UTF-8, so one such byte on the wire would 400 the request and
+// destroy every other record in the batch. The encoder substitutes U+FFFD
+// instead, which keeps the batch parseable and leaves the server free to reject
+// that one record if it wants to.
+func TestBatchStaysParseableWhenARecordCarriesInvalidUTF8(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		want    string
+	}{
+		{"lone continuation byte", "provider said: x\xffy done", "provider said: x�y done"},
+		{"truncated multi-byte", "\xed\xa0 tail", "�� tail"},
+		{"valid text is untouched", "안녕 ☃", "안녕 ☃"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newSnapshotServer(t, testSnapshotJSON)
+			c, _ := newLoggingClient(t, server, nil)
+			rec := sampleRecord(1)
+			rec.Output = &Output{Content: tc.content}
+			if err := c.Log(rec); err != nil {
+				t.Fatalf("log: %v", err)
+			}
+			if err := c.Flush(testContext(t)); err != nil {
+				t.Fatalf("flush: %v", err)
+			}
+			raw := server.rawBatches()
+			if len(raw) != 1 {
+				t.Fatalf("expected 1 request, got %d", len(raw))
+			}
+			if !utf8.Valid(raw[0]) {
+				t.Fatal("the request body carried invalid UTF-8: the server would refuse the whole batch")
+			}
+			if !json.Valid(raw[0]) {
+				t.Fatalf("the request body is not valid JSON: %q", raw[0])
+			}
+			output, _ := server.batches()[0][0]["output"].(map[string]interface{})
+			if got, _ := output["content"].(string); got != tc.want {
+				t.Fatalf("content %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Without a buffer — test mode, offline mode, and a live client with no API key
+// — records are captured in memory. That capture is bounded exactly like the
+// send queue: a process that boots on a missing PTN_API_KEY has to ride the
+// misconfiguration out, not grow until it is killed.
+func TestCaptureIsBoundedWhenThereIsNoBuffer(t *testing.T) {
+	cases := []struct {
+		name string
+		cfg  Config
+	}{
+		{"live with no API key", Config{Environment: "production"}},
+		{"offline", Config{Mode: ModeOffline, Environment: "production"}},
+		{"test", Config{Mode: ModeTest, Environment: "production"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := tc.cfg
+			cfg.LogMaxBuffer = 10
+			c := newTestClient(t, cfg)
+			logN(t, c, 100)
+
+			captured := c.Recorded()
+			if len(captured) != 10 {
+				t.Fatalf("captured %d records, want at most LogMaxBuffer (10)", len(captured))
+			}
+			stats := c.BufferStats()
+			if stats.Queued != 10 || stats.DroppedOverflow != 90 {
+				t.Fatalf("stats %+v, want 10 queued and 90 dropped", stats)
+			}
+			// Drop-oldest: the newest ten survive.
+			if captured[0]["trace_id"] != "test:90" || captured[9]["trace_id"] != "test:99" {
+				t.Fatalf("kept %v … %v, want test:90 … test:99", captured[0]["trace_id"], captured[9]["trace_id"])
+			}
+			c.ClearRecorded()
+			if stats := c.BufferStats(); stats.Queued != 0 || stats.DroppedOverflow != 0 {
+				t.Fatalf("ClearRecorded left %+v behind", stats)
+			}
+		})
+	}
+}
+
+// Log after Close must say so. Silently discarding the record would tell the
+// caller it was accepted, and Flush already reports the same condition.
+func TestLogAfterCloseIsReported(t *testing.T) {
+	t.Run("buffered", func(t *testing.T) {
+		server := newSnapshotServer(t, testSnapshotJSON)
+		c, _ := newLoggingClient(t, server, nil)
+		if err := c.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := c.Log(sampleRecord(1)); !errors.Is(err, ErrClosed) {
+			t.Fatalf("Log after Close returned %v, want ErrClosed", err)
+		}
+		if got := c.BufferStats().DroppedAfterClose; got != 1 {
+			t.Fatalf("DroppedAfterClose %d, want 1", got)
+		}
+		if err := c.Flush(testContext(t)); !errors.Is(err, ErrClosed) {
+			t.Fatalf("Flush after Close returned %v, want ErrClosed", err)
+		}
+	})
+
+	// A client that captures instead of sending answers the same way.
+	t.Run("captured", func(t *testing.T) {
+		c := newTestClient(t, Config{Mode: ModeTest})
+		if err := c.Close(); err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+		if err := c.Log(sampleRecord(1)); !errors.Is(err, ErrClosed) {
+			t.Fatalf("Log after Close returned %v, want ErrClosed", err)
+		}
+		if len(c.Recorded()) != 0 {
+			t.Fatal("a closed client must not capture the record either")
+		}
+		if got := c.BufferStats().DroppedAfterClose; got != 1 {
+			t.Fatalf("DroppedAfterClose %d, want 1", got)
+		}
+	})
+}
+
+// Drop-oldest means oldest, not "whichever environment sorts first": records
+// carry an enqueue sequence so a process logging to two environments still
+// loses its genuinely oldest records when the queue is full.
+func TestBufferDropsTheOldestRecordsAcrossEnvironments(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	c, _ := newLoggingClient(t, server, func(cfg *Config) { cfg.LogMaxBuffer = 6 })
+
+	// staging is logged first, so its records are the older ones — even though
+	// "production" sorts before it.
+	for i := 0; i < 5; i++ {
+		rec := sampleRecord(i)
+		rec.Environment = "staging"
+		if err := c.Log(rec); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+	}
+	for i := 5; i < 10; i++ {
+		if err := c.Log(sampleRecord(i)); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+	}
+	if stats := c.BufferStats(); stats.Queued != 6 || stats.DroppedOverflow != 4 {
+		t.Fatalf("stats %+v, want 6 queued and 4 dropped", stats)
+	}
+	if err := c.Flush(testContext(t)); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	traces := server.tracesByEnvironment()
+	if got := strings.Join(traces["staging"], ","); got != "test:4" {
+		t.Fatalf("staging kept %q, want only the newest staging record test:4", got)
+	}
+	if got := strings.Join(traces["production"], ","); got != "test:5,test:6,test:7,test:8,test:9" {
+		t.Fatalf("production kept %q, want every production record", got)
+	}
+}
+
+// Failures belong to an environment. A success on one must not report health
+// while another is still backing off, and a requeued batch must give its bytes
+// back to the lane it came from.
+func TestFailuresAreCountedPerEnvironment(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	server.scriptGenerations("", []int{500}, []string{""})
+	c, _ := newLoggingClient(t, server, nil)
+
+	if err := c.Log(sampleRecord(1)); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	staging := sampleRecord(2)
+	staging.Environment = "staging"
+	if err := c.Log(staging); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	// production is sent first and fails; staging is sent next and succeeds.
+	if err := c.Flush(testContext(t)); err == nil {
+		t.Fatal("the flush must report the record the failing environment still holds")
+	}
+
+	stats := c.BufferStats()
+	if stats.Failures != 1 {
+		t.Fatalf("Failures %d: a success on one environment must not clear another's backoff", stats.Failures)
+	}
+	if stats.Queued != 1 || stats.Sent != 1 {
+		t.Fatalf("stats %+v, want the failed record queued and the other one sent", stats)
+	}
+	assertLaneBytes(t, c.buffer)
+}
+
+// assertLaneBytes checks the byte counters against the records the lanes
+// actually hold: the flush trigger reads them, so a retry that forgot to give
+// its bytes back would under-count for the lifetime of the process.
+func assertLaneBytes(t *testing.T, b *logBuffer) {
+	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for name, l := range b.lanes {
+		pending := 0
+		for _, r := range l.pending {
+			pending += r.bytes
+		}
+		if l.pendingBytes != pending {
+			t.Fatalf("lane %q pendingBytes %d, want %d", name, l.pendingBytes, pending)
+		}
+		ready := 0
+		for _, batch := range l.ready {
+			ready += batch.byteSize()
+		}
+		if l.readyBytes != ready {
+			t.Fatalf("lane %q readyBytes %d, want %d", name, l.readyBytes, ready)
+		}
 	}
 }

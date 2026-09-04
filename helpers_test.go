@@ -89,6 +89,12 @@ func stagingSnapshotJSON() string {
 	return `{"schema_version":3,"project":"sdkfixture","environment":"staging","use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
 }
 
+// unlabelledSnapshotJSON is a valid v3 document that names neither environment
+// nor project — the shape a hand-assembled or legacy bundle has.
+func unlabelledSnapshotJSON() string {
+	return `{"schema_version":3,"use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
+}
+
 func writeFile(t *testing.T, dir, name, content string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)

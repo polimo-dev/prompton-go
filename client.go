@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -35,12 +36,15 @@ type Client struct {
 	pollDone  chan struct{}
 	closeOnce sync.Once
 	closeErr  error
+	closed    atomic.Bool
 
 	warnMu sync.Mutex
 	warned map[string]time.Time
 
-	recordedMu sync.Mutex
-	recorded   []map[string]interface{}
+	recordedMu      sync.Mutex
+	recorded        []map[string]interface{}
+	recordedDropped int
+	recordedClosed  int
 
 	resolveMu    sync.Mutex
 	resolveCache map[string]*cachedResolve
@@ -128,6 +132,7 @@ func (c *Client) localTierDescription() string {
 // It is safe to call more than once.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
+		c.closed.Store(true)
 		close(c.done)
 		<-c.pollDone
 		if c.buffer != nil {
@@ -166,9 +171,17 @@ func (c *Client) warnOnce(key, format string, args ...interface{}) {
 //
 // Pass WithVariables to get the prompt rendered; without it the raw templates
 // come back, which is also what POST /resolve does.
+//
+// WithEnvironment is refused here rather than ignored: this client holds one
+// environment's document, and answering a staging call from the production pin
+// is precisely the accident the environment guard exists to prevent. Use
+// ResolveRemote, or a second client, for another environment.
 func (c *Client) Resolve(ctx context.Context, useCase string, opts ...ResolveOption) (*Resolution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if env := buildResolveOptions(opts).Environment; env != "" && env != c.cfg.Environment {
+		return nil, environmentMismatch(useCase, env, c.cfg.Environment)
 	}
 	entry := c.store.get()
 	if entry == nil {

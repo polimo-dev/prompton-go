@@ -287,3 +287,34 @@ func TestLiveGenerationsBatchIsAcceptedThenDuplicated(t *testing.T) {
 		t.Fatalf("resend result %+v, want 2 duplicates", result)
 	}
 }
+
+// A provider can return a byte that is not valid UTF-8. The server parses the
+// request body as UTF-8 and refuses the whole thing if any of it is not, so
+// this proves against the real server that one such record no longer destroys
+// the batch it travelled in.
+func TestLiveGenerationWithInvalidUTF8IsStillAccepted(t *testing.T) {
+	c := liveClient(t, nil)
+	res, err := c.Resolve(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+
+	rec := GenerationRecord{
+		Resolution: res,
+		Status:     StatusOK,
+		StartedAt:  time.Now().UTC(),
+		LatencyMS:  17,
+		TraceID:    "go-sdk-integration-utf8",
+		Output:     &Output{Content: "provider said: x\xff\xfey done"},
+	}
+	if err := c.Log(rec); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	if err := c.Flush(testContext(t)); err != nil {
+		t.Fatalf("a record carrying invalid UTF-8 must not fail the batch: %v", err)
+	}
+	stats := c.BufferStats()
+	if stats.Sent != 1 || stats.DroppedClientError != 0 || stats.DroppedRejected != 0 {
+		t.Fatalf("buffer stats %+v, want the record accepted and nothing dropped", stats)
+	}
+}

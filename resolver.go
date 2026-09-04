@@ -82,7 +82,9 @@ type ResolveOptions struct {
 	Prompt string
 	// Variables renders the prompt. Nil leaves the raw template in place.
 	Variables map[string]interface{}
-	// Environment overrides the client's environment for a remote resolve.
+	// Environment overrides the environment for a remote resolve. Local
+	// resolution reads one document and refuses to answer for another
+	// environment rather than silently serving the wrong pin.
 	Environment string
 }
 
@@ -99,9 +101,23 @@ func WithVariables(vars map[string]interface{}) ResolveOption {
 	return func(o *ResolveOptions) { o.Variables = vars }
 }
 
-// WithEnvironment overrides the environment for this call.
+// WithEnvironment overrides the environment for this call. Only ResolveRemote
+// can honour it: a local Resolve fails with an "environment_mismatch"
+// ResolveError when it names anything other than the document in memory, since
+// one process holds one environment's document.
 func WithEnvironment(env string) ResolveOption {
 	return func(o *ResolveOptions) { o.Environment = env }
+}
+
+// environmentMismatch is the error a local resolve returns when the call asked
+// for an environment other than the one loaded.
+func environmentMismatch(useCase, asked, loaded string) error {
+	return &ResolveError{
+		Code:                "environment_mismatch",
+		UseCase:             useCase,
+		Environment:         asked,
+		DocumentEnvironment: loaded,
+	}
 }
 
 func buildResolveOptions(opts []ResolveOption) ResolveOptions {
@@ -128,6 +144,9 @@ func Resolve(snap *Snapshot, useCase string, opts ...ResolveOption) (*Resolution
 		return nil, ErrNotReady
 	}
 	o := buildResolveOptions(opts)
+	if o.Environment != "" && o.Environment != snap.Environment {
+		return nil, environmentMismatch(useCase, o.Environment, snap.Environment)
+	}
 
 	uc, ok := snap.UseCases[useCase]
 	if !ok {

@@ -77,7 +77,12 @@ type Outcome struct {
 	Result interface{}
 }
 
-// Log queues one monitoring log and returns immediately.
+// Log queues one monitoring log and returns immediately. It returns ErrClosed
+// when the client has already been closed, and a validation error when the
+// record is missing a required field; every other failure mode — a full queue,
+// an oversized record, a server that refuses the batch — is counted in
+// BufferStats rather than returned, because a monitoring log must never become
+// the caller's problem.
 //
 // It fills in the id (a UUIDv7), the started_at, the sdk name and version, and —
 // when the record carries a Resolution — the deployment, prompt, model and
@@ -124,15 +129,35 @@ func (c *Client) Log(rec GenerationRecord) error {
 	})
 
 	if c.buffer == nil {
+		if c.closed.Load() {
+			// The same answer the buffered path gives: a closed client says so
+			// instead of accepting a record nobody will ever read.
+			c.recordedMu.Lock()
+			c.recordedClosed++
+			c.recordedMu.Unlock()
+			c.warnOnce("log-closed", "dropping a monitoring log: the client is closed")
+			return ErrClosed
+		}
 		// Test and offline modes, and a live client with no API key: keep the
 		// record where Recorded can read it rather than pretending to send it.
+		// The capture is bounded exactly like the send queue — a process that
+		// boots without an API key must ride the misconfiguration out, not grow
+		// until it is killed.
 		c.recordedMu.Lock()
 		c.recorded = append(c.recorded, payload)
+		dropped := 0
+		if limit := c.cfg.LogMaxBuffer; limit > 0 && len(c.recorded) > limit {
+			dropped = len(c.recorded) - limit
+			c.recorded = append(c.recorded[:0], c.recorded[dropped:]...)
+			c.recordedDropped += dropped
+		}
 		c.recordedMu.Unlock()
+		if dropped > 0 {
+			c.warnOnce("log-overflow", "monitoring-log queue full: dropped %d oldest record(s)", dropped)
+		}
 		return nil
 	}
-	c.buffer.enqueue(environment, payload)
-	return nil
+	return c.buffer.enqueue(environment, payload)
 }
 
 // policyFor is the use case's payload policy: the one carried by the resolution
@@ -165,7 +190,11 @@ func (c *Client) BufferStats() BufferStats {
 	if c.buffer == nil {
 		c.recordedMu.Lock()
 		defer c.recordedMu.Unlock()
-		return BufferStats{Queued: len(c.recorded)}
+		return BufferStats{
+			Queued:            len(c.recorded),
+			DroppedOverflow:   c.recordedDropped,
+			DroppedAfterClose: c.recordedClosed,
+		}
 	}
 	return c.buffer.snapshotStats()
 }
@@ -180,10 +209,13 @@ func (c *Client) Recorded() []map[string]interface{} {
 	return out
 }
 
-// ClearRecorded empties the captured monitoring logs.
+// ClearRecorded empties the captured monitoring logs and resets their overflow
+// counter, so one test never reads another's state.
 func (c *Client) ClearRecorded() {
 	c.recordedMu.Lock()
 	c.recorded = nil
+	c.recordedDropped = 0
+	c.recordedClosed = 0
 	c.recordedMu.Unlock()
 }
 

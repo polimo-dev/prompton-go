@@ -36,6 +36,8 @@ type snapshotServer struct {
 	retryAfter   string
 	lastIfNone   string
 	generations  [][]map[string]interface{}
+	genRaw       [][]byte
+	genEnvs      []string
 	genStatus    []int
 	genRetryHdr  string
 	genResponses []string
@@ -100,6 +102,8 @@ func (s *snapshotServer) handleGenerations(w http.ResponseWriter, r *http.Reques
 
 	s.mu.Lock()
 	s.generations = append(s.generations, envelope.Generations)
+	s.genRaw = append(s.genRaw, buf)
+	s.genEnvs = append(s.genEnvs, r.URL.Query().Get("environment"))
 	status := 202
 	if len(s.genStatus) > 0 {
 		status = s.genStatus[0]
@@ -151,6 +155,35 @@ func (s *snapshotServer) queueSnapshotStatuses(retryAfter string, statuses ...in
 	s.statusQueue = append(s.statusQueue, statuses...)
 	s.retryAfter = retryAfter
 	s.mu.Unlock()
+}
+
+// rawBatches is the exact bytes each /generations request carried, which is
+// the only way to see what actually went on the wire.
+func (s *snapshotServer) rawBatches() [][]byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]byte, len(s.genRaw))
+	copy(out, s.genRaw)
+	return out
+}
+
+// tracesByEnvironment groups the trace ids the server received by the
+// environment query parameter the batch carried.
+func (s *snapshotServer) tracesByEnvironment() map[string][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := map[string][]string{}
+	for i, batch := range s.generations {
+		env := ""
+		if i < len(s.genEnvs) {
+			env = s.genEnvs[i]
+		}
+		for _, rec := range batch {
+			trace, _ := rec["trace_id"].(string)
+			out[env] = append(out[env], trace)
+		}
+	}
+	return out
 }
 
 func (s *snapshotServer) batches() [][]map[string]interface{} {
@@ -322,19 +355,33 @@ func TestSnapshotBundleUsedWhenDiskIsEmpty(t *testing.T) {
 }
 
 func TestSnapshotFromAnotherEnvironmentIsRefused(t *testing.T) {
-	dir := t.TempDir()
-	bundle := writeFile(t, dir, "bundle.json", stagingSnapshotJSON())
-	c := newTestClient(t, Config{
-		Host:             "http://127.0.0.1:1",
-		APIKey:           "ptn_sdkfixture_test",
-		Environment:      "production",
-		Project:          "sdkfixture",
-		BundlePath:       bundle,
-		DisableDiskCache: true,
-		Timeout:          100 * time.Millisecond,
-	})
-	if _, err := c.Resolve(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
-		t.Fatalf("a staging bundle must not boot a production process, got %v", err)
+	cases := []struct {
+		name     string
+		document string
+	}{
+		{"another environment", stagingSnapshotJSON()},
+		// A hand-assembled or legacy bundle that names no environment is
+		// refused too: an unlabelled document would otherwise be accepted by
+		// every process, whatever it reads.
+		{"no environment named", unlabelledSnapshotJSON()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			bundle := writeFile(t, dir, "bundle.json", tc.document)
+			c := newTestClient(t, Config{
+				Host:             "http://127.0.0.1:1",
+				APIKey:           "ptn_sdkfixture_test",
+				Environment:      "production",
+				Project:          "sdkfixture",
+				BundlePath:       bundle,
+				DisableDiskCache: true,
+				Timeout:          100 * time.Millisecond,
+			})
+			if _, err := c.Resolve(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+				t.Fatalf("the document must not boot a production process, got %v", err)
+			}
+		})
 	}
 }
 

@@ -131,8 +131,11 @@ The refresh runs in the background and is also nudged by the next call, so a sca
 still refreshes. It never blocks or fails a generation: while it is in flight, and if it fails, the
 previous document is served.
 
-**Never used**: a document whose environment or project is not this process's. A staging process
-must not boot on a production bundle, and the file records both.
+**Never used**: a document whose environment or project is not this process's — including one that
+names neither, since an unlabelled file would otherwise be accepted everywhere. A staging process
+must not boot on a production bundle, and the file records both. For the same reason a local
+`Resolve` refuses `WithEnvironment` for anything but the client's own environment: one process
+holds one environment's document. Use `ResolveRemote`, or a second client, to read another.
 
 **Building a bundle.** `client.ExportSnapshot("priv/prompton/snapshot.production.json")` writes the
 document and its sidecar. Run it in CI on every build and commit the result; one file per
@@ -150,7 +153,8 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | PromptOn unreachable at startup, disk cache present | Loads it, keeps polling | `Source: disk` |
 | …and no disk cache, bundle present | Loads it, keeps polling | `Source: bundle` |
 | …and nothing anywhere | Resolution fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
-| Snapshot for the wrong environment or project | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
+| Snapshot for the wrong environment or project, or naming neither | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
+| `Resolve` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
 | Snapshot `schema_version` 1 or 2 | Refuses it and keeps polling | `*UnsupportedSchemaError` |
 | Use case not in the snapshot | — | `ErrUnknownUseCase` |
 | Use case with no live deployment | — | `ErrUnresolved` |
@@ -159,7 +163,9 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | `429` or `5xx` on `/generations` | Retries the same batch with the same ids, honouring `Retry-After`, backing off 1s ×2 up to 5 min, then drops and counts | Nothing; `Log` already returned |
 | `413` on `/generations` | Splits the batch in half and resends both halves | Nothing |
 | Any other `4xx` on `/generations` | Drops the batch, counts it, logs once. Never retried | Nothing |
-| Log queue full | Drops the oldest and counts it | Nothing |
+| A record carrying invalid UTF-8 | Substitutes `U+FFFD` so the batch stays parseable and only that record can be rejected | Nothing |
+| Log queue full | Drops the oldest and counts it — including the in-memory capture of test, offline and no-API-key clients | Nothing |
+| `Log` after `Close` | Counts it as `DroppedAfterClose` | `ErrClosed`, as `Flush` already returned |
 
 `ErrUnresolved` and `ErrUnknownPrompt` are bugs in the deployment or in the call — **never** a
 signal to reach for a copy of the old prompt string. Fail that call loudly instead.
@@ -173,7 +179,9 @@ Three entry points, none of which blocks the provider call:
 - **`client.Log(record)`** queues one record you built yourself and returns. It requires
   `UseCase`, `Model`, `Status` and `StartedAt`, and fills in the `ID` (a UUIDv7), the `SDK` name and
   version, and — when you pass a `Resolution` — the deployment, prompt, model and
-  `resolution_source` fields.
+  `resolution_source` fields. It returns an error only for a record it refuses outright and for
+  `ErrClosed` after `Close`; a full queue or a server that refuses the batch is counted in
+  `BufferStats`, never handed back to the caller.
 - **`client.Flush(ctx)`** sends the queue now and waits. For shutdown, tests and scripts.
 - **`client.WithGeneration(ctx, res, meta, fn)`** runs your function, measures the latency, builds
   the record and queues it. It returns exactly what your function returned; an error propagates
@@ -245,7 +253,10 @@ for _, rec := range client.Recorded() {
 
 `ModeTest` makes no HTTP calls at all and captures monitoring logs in memory in the shape they
 would have been sent. `ModeOffline` resolves from disk and bundle only and captures logs the same
-way — useful for CI and for working on a train.
+way — useful for CI and for working on a train. A live client with no `PTN_API_KEY` captures them
+too. The capture is bounded by `LogMaxBuffer` exactly like the send queue, dropping the oldest and
+counting it in `BufferStats().DroppedOverflow`, so a long-running process started without a key
+cannot grow without end.
 
 ## Conformance
 

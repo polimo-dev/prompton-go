@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // Canonical JSON is the byte representation every PromptOn SDK agrees on: object
@@ -169,35 +170,53 @@ func writeCanonical(buf *bytes.Buffer, v interface{}) {
 	}
 }
 
+// writeJSONString writes s as a JSON string. A byte that is not part of a valid
+// UTF-8 sequence — a provider's truncated multi-byte character, a mangled tool
+// argument — becomes U+FFFD rather than travelling raw: the server parses the
+// whole request body as UTF-8, so one poisoned byte would otherwise turn into a
+// 400 that destroys the entire batch instead of the single record the contract
+// says should be rejected.
 func writeJSONString(buf *bytes.Buffer, s string) {
 	buf.WriteByte('"')
-	for i := 0; i < len(s); i++ {
+	for i := 0; i < len(s); {
 		c := s[i]
-		switch c {
-		case '"':
-			buf.WriteString(`\"`)
-		case '\\':
-			buf.WriteString(`\\`)
-		case '\n':
-			buf.WriteString(`\n`)
-		case '\r':
-			buf.WriteString(`\r`)
-		case '\t':
-			buf.WriteString(`\t`)
-		case '\b':
-			buf.WriteString(`\b`)
-		case '\f':
-			buf.WriteString(`\f`)
-		default:
-			if c < 0x20 {
-				const hex = "0123456789abcdef"
-				buf.WriteString(`\u00`)
-				buf.WriteByte(hex[c>>4])
-				buf.WriteByte(hex[c&0xF])
-			} else {
-				buf.WriteByte(c)
+		if c < utf8.RuneSelf {
+			i++
+			switch c {
+			case '"':
+				buf.WriteString(`\"`)
+			case '\\':
+				buf.WriteString(`\\`)
+			case '\n':
+				buf.WriteString(`\n`)
+			case '\r':
+				buf.WriteString(`\r`)
+			case '\t':
+				buf.WriteString(`\t`)
+			case '\b':
+				buf.WriteString(`\b`)
+			case '\f':
+				buf.WriteString(`\f`)
+			default:
+				if c < 0x20 {
+					const hex = "0123456789abcdef"
+					buf.WriteString(`\u00`)
+					buf.WriteByte(hex[c>>4])
+					buf.WriteByte(hex[c&0xF])
+				} else {
+					buf.WriteByte(c)
+				}
 			}
+			continue
 		}
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			buf.WriteString(string(utf8.RuneError))
+			i++
+			continue
+		}
+		buf.WriteString(s[i : i+size])
+		i += size
 	}
 	buf.WriteByte('"')
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -132,15 +133,25 @@ func readSnapshotFile(path, environment, project string) (*snapshotEntry, error)
 }
 
 // guardDocument refuses a document that belongs to another environment or
-// project.
+// project. A document that names neither is refused too: a hand-assembled or
+// legacy bundle with no environment key is exactly the artefact a migration
+// produces, and accepting it in every process is the one thing that must never
+// happen.
 func guardDocument(snap *Snapshot, environment, project string) error {
-	if environment != "" && snap.Environment != "" && snap.Environment != environment {
-		return fmt.Errorf("prompton: snapshot is for environment %q, this process reads %q", snap.Environment, environment)
+	if environment != "" && snap.Environment != environment {
+		return fmt.Errorf("prompton: snapshot is for environment %s, this process reads %q", documentLabel(snap.Environment), environment)
 	}
-	if project != "" && snap.Project != "" && snap.Project != project {
-		return fmt.Errorf("prompton: snapshot is for project %q, this process reads %q", snap.Project, project)
+	if project != "" && snap.Project != project {
+		return fmt.Errorf("prompton: snapshot is for project %s, this process reads %q", documentLabel(snap.Project), project)
 	}
 	return nil
+}
+
+func documentLabel(value string) string {
+	if value == "" {
+		return "nothing in particular (the document names none)"
+	}
+	return strconv.Quote(value)
 }
 
 // writeSnapshotFile writes the document and its sidecar atomically, so a reader
