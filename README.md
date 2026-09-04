@@ -7,16 +7,16 @@ PromptOn holds, per use case and per environment, one **pin**: a prompt version 
 name, one model, and its parameters. Your app fetches that configuration, renders the prompt with
 this call's variables, and **calls the model provider itself** — with its own key and its own HTTP
 client. PromptOn is never in the request path, never sees your provider key, and cannot slow your
-generation down. What it gets back is **monitoring logs**: one record per model call, batched.
+model call down. What it gets back is **monitoring logs**: one record per model call, batched.
 
 If PromptOn is unreachable, your app keeps running on the last configuration it received.
 
 ```
-Resolve ──▶ Resolution{Model, Params, Messages, DeploymentID, Prompt, …}
-                │
-                ├──▶ your provider client, your key
-                │
-WithGeneration ─┴──▶ one monitoring log, queued and batched
+UseCase ──▶ {Model, Params, ProviderOptions, DeploymentID, Prompt, …}
+   │
+   ├── Messages/Text ──▶ your provider client, your key
+   │
+   └── Track ─────────▶ one monitoring log, queued and batched
 ```
 
 ## Install
@@ -42,24 +42,28 @@ if err != nil {
 }
 defer client.Close()
 
-res, err := client.Resolve(ctx, "support_reply",
+res, err := client.UseCase(ctx, "support_reply",
 	prompton.WithVariables(map[string]any{"question": question}))
 if err != nil {
 	return err
 }
+messages, err := res.Messages(ctx, map[string]any{"question": question})
+if err != nil {
+	return err
+}
 
-out, err := client.WithGeneration(ctx, res, prompton.CallMeta{
+out, err := res.Track(ctx, prompton.CallMeta{
 	Variables: map[string]any{"question": question},
-	Messages:  res.Messages,
+	Messages:  messages,
 	TraceID:   "ticket:" + ticketID,
-}, func(ctx context.Context) (*prompton.Outcome, error) {
+}, func(ctx context.Context) (*prompton.Result, error) {
 	// Call your provider here with res.Model, res.Params, res.ProviderOptions
-	// and res.Messages. Return what came back.
-	answer, usage, err := myProvider.Chat(ctx, res.Model, res.Messages, res.Params)
+	// and messages. Return what came back.
+	answer, usage, err := myProvider.Chat(ctx, res.Model, messages, res.Params)
 	if err != nil {
 		return nil, prompton.NewCallError(prompton.ErrorKindForStatus(status), status, err.Error())
 	}
-	return &prompton.Outcome{
+	return &prompton.Result{
 		Content:      answer,
 		FinishReason: "stop",
 		Usage: &prompton.Usage{
@@ -76,12 +80,12 @@ out, err := client.WithGeneration(ctx, res, prompton.CallMeta{
 Two calls instead of one, when the prompt and the render happen at different times:
 
 ```go
-res, _ := client.Resolve(ctx, "support_reply")            // raw templates
-messages, _ := res.RenderMessages(map[string]any{"question": question})
+res, _ := client.UseCase(ctx, "support_reply")            // raw templates
+messages, _ := res.Messages(ctx, map[string]any{"question": question})
 ```
 
-For a text use case it is `res.Text` and `res.RenderText`; an embedding use case resolves the model
-only and has neither.
+For a text use case use `res.Text(ctx, vars)`; an embedding use case selects the model only and
+has neither messages nor text.
 
 ## Configuration
 
@@ -94,15 +98,15 @@ Precedence is **explicit option → environment variable → default**.
 | `Environment` | `PTN_ENVIRONMENT` | `production` | Which environment this process reads. Also the guard on the disk cache and the bundle |
 | `Project` | `PTN_PROJECT` | read from the API key | Names the default disk cache file |
 | `Mode` | — | `ModeLive` | `ModeLive`, `ModeTest` (no HTTP, logs captured), `ModeOffline` (disk and bundle only) |
-| `CacheTTL` | — | `10s` | How long a snapshot is served from memory before a conditional refresh. Also the base of the failure backoff |
+| `CacheTTL` | — | `10s` | How long a use-case document is served from memory before a conditional refresh. Also the base of the failure backoff |
 | `Timeout` | — | `5s` | Bounds one HTTP request |
 | `HTTPClient` | — | a client with `Timeout` | Your own `*http.Client` |
-| `DiskCachePath` | — | OS cache dir, named by project and environment | Where the snapshot is mirrored |
+| `DiskCachePath` | — | OS cache dir, named by project and environment | Where the use-case document is mirrored |
 | `DisableDiskCache` | — | `false` | Turns the disk tier off |
-| `BundlePath` | — | — | A snapshot JSON file shipped inside the app, used when memory and disk are empty |
+| `BundlePath` | — | — | A use-case document JSON file shipped inside the app, used when memory and disk are empty |
 | `HashEndUser` | — | `false` | Sends `sha256(end_user_ref)` instead of the raw reference |
 | `Redact` | — | — | `func(map[string]any) map[string]any`, applied to every record last |
-| `PayloadDefaults` | — | `full`, rate `1.0`, 256 KiB | Policy for a use case whose snapshot carries none |
+| `PayloadDefaults` | — | `full`, rate `1.0`, 256 KiB | Policy for a use case whose document carries none |
 | `LogFlushInterval` / `LogFlushSize` / `LogFlushBytes` | — | `2s` / `100` / `1 MB` | Monitoring-log flush triggers |
 | `LogMaxBuffer` | — | `10000` | Queue bound; above it the oldest records are dropped and counted |
 | `LogMaxAttempts` | — | `8` | How often one batch is retried before it is dropped and counted |
@@ -111,7 +115,7 @@ Precedence is **explicit option → environment variable → default**.
 
 ## Resilience
 
-This is the part that matters. A generation must never fail because PromptOn did: the configuration
+This is the part that matters. A model call must never fail because PromptOn did: the configuration
 is stale in the worst case, not absent.
 
 **Three tiers, and nothing else.** Memory, one local file, and a file bundled into the app. No
@@ -121,23 +125,23 @@ writes are atomic (temp file, then rename), readers tolerate a concurrent rename
 partial file is ignored rather than raised.
 
 **Load order at startup**: memory → disk → bundle → remote. `New` never blocks on the network; the
-first fetch happens in the background, so the first generation is answered by whatever tier already
-had a document. `Resolution.Source` records which one, and it travels with every monitoring log as
-`resolution_source`, so a stale deployment is visible in the data.
+first fetch happens in the background, so the first model call is answered by whatever tier already
+had a document. `UseCase.Source` records which one, and it travels with every monitoring log as
+`source`, so a stale deployment is visible in the data.
 
-**Polling.** Within `CacheTTL` every resolve is served from memory with no HTTP call. Past it the
-SDK refreshes with `GET /snapshot` + `If-None-Match` — a `304` carries no body and costs nothing.
+**Polling.** Within `CacheTTL` every use-case selection is served from memory with no HTTP call. Past it the
+SDK refreshes with `GET /use-cases` + `If-None-Match` — a `304` carries no body and costs nothing.
 The refresh runs in the background and is also nudged by the next call, so a scale-to-zero runtime
-still refreshes. It never blocks or fails a generation: while it is in flight, and if it fails, the
+still refreshes. It never blocks or fails a model call: while it is in flight, and if it fails, the
 previous document is served.
 
 **Never used**: a document whose environment or project is not this process's — including one that
 names neither, since an unlabelled file would otherwise be accepted everywhere. A staging process
 must not boot on a production bundle, and the file records both. For the same reason a local
-`Resolve` refuses `WithEnvironment` for anything but the client's own environment: one process
-holds one environment's document. Use `ResolveRemote`, or a second client, to read another.
+`UseCase` refuses `WithEnvironment` for anything but the client's own environment: one process
+holds one environment's document. Use `RemoteUseCase`, or a second client, to read another.
 
-**Building a bundle.** `client.ExportSnapshot("priv/prompton/snapshot.production.json")` writes the
+**Building a bundle.** `client.ExportUseCaseDocument("priv/prompton/use-cases.production.json")` writes the
 document and its sidecar. Run it in CI on every build and commit the result; one file per
 environment, and load the one matching the process. `client.Refresh(ctx)` is the synchronous
 "fetch once now" for scripts and one-shot jobs.
@@ -148,21 +152,21 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 |---|---|---|
 | Within `CacheTTL` | Serves memory, no HTTP | The cached configuration |
 | `304 Not Modified` | Nothing to parse; the document and ETag stay | The cached configuration |
-| `429` on `/snapshot` | Waits out `Retry-After` (else `error.details.retry_after`, else backoff) before contacting the server again | The previous document. No error |
+| `429` on `/use-cases` | Waits out `Retry-After` (else `error.details.retry_after`, else backoff) before contacting the server again | The previous document. No error |
 | `5xx`, timeout, DNS, connection refused | Backs off ×2 from `CacheTTL` up to 5 minutes, keeps the previous document, warns once a minute | The previous document. No error |
 | PromptOn unreachable at startup, disk cache present | Loads it, keeps polling | `Source: disk` |
 | …and no disk cache, bundle present | Loads it, keeps polling | `Source: bundle` |
-| …and nothing anywhere | Resolution fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
-| Snapshot for the wrong environment or project, or naming neither | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
-| `Resolve` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
-| Snapshot `schema_version` 1 or 2 | Refuses it and keeps polling | `*UnsupportedSchemaError` |
-| Use case not in the snapshot | — | `ErrUnknownUseCase` |
+| …and nothing anywhere | Use case selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
+| Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
+| `UseCase` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
+| Any use-case document without exact integer `schema_version: 4` | Refuses it and keeps polling | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
+| Use case not in the document | — | `ErrUnknownUseCase` |
 | Use case with no live deployment | — | `ErrUnresolved` |
-| Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `AvailablePrompts` |
+| Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |
 | Template needs a variable the call did not send | — | `*MissingVariableError` naming it |
-| `429` or `5xx` on `/generations` | Retries the same batch with the same ids, honouring `Retry-After`, backing off 1s ×2 up to 5 min, then drops and counts | Nothing; `Log` already returned |
-| `413` on `/generations` | Splits the batch in half and resends both halves | Nothing |
-| Any other `4xx` on `/generations` | Drops the batch, counts it, logs once. Never retried | Nothing |
+| `429` or `5xx` on `/logs` | Retries the same batch with the same ids, honouring `Retry-After`, backing off 1s ×2 up to 5 min, then drops and counts | Nothing; `Log` already returned |
+| `413` on `/logs` | Splits the batch in half and resends both halves | Nothing |
+| Any other `4xx` on `/logs` | Drops the batch, counts it, logs once. Never retried | Nothing |
 | A record carrying invalid UTF-8 | Substitutes `U+FFFD` so the batch stays parseable and only that record can be rejected | Nothing |
 | Log queue full | Drops the oldest and counts it — including the in-memory capture of test, offline and no-API-key clients | Nothing |
 | `Log` after `Close` | Counts it as `DroppedAfterClose` | `ErrClosed`, as `Flush` already returned |
@@ -178,12 +182,12 @@ Three entry points, none of which blocks the provider call:
 
 - **`client.Log(record)`** queues one record you built yourself and returns. It requires
   `UseCase`, `Model`, `Status` and `StartedAt`, and fills in the `ID` (a UUIDv7), the `SDK` name and
-  version, and — when you pass a `Resolution` — the deployment, prompt, model and
-  `resolution_source` fields. It returns an error only for a record it refuses outright and for
+  version, and — when you pass `UseCaseEvidence` — the deployment, prompt, model and
+  `source` fields. It returns an error only for a record it refuses outright and for
   `ErrClosed` after `Close`; a full queue or a server that refuses the batch is counted in
   `BufferStats`, never handed back to the caller.
 - **`client.Flush(ctx)`** sends the queue now and waits. For shutdown, tests and scripts.
-- **`client.WithGeneration(ctx, res, meta, fn)`** runs your function, measures the latency, builds
+- **`res.Track(ctx, meta, fn)`** runs your function, measures the latency, builds
   the record and queues it. It returns exactly what your function returned; an error propagates
   unchanged after being logged, and a panic is logged as an `app` error and re-panics.
 
@@ -204,9 +208,9 @@ counted.
 | `Status` | string | Required — `StatusOK` or `StatusError` |
 | `StartedAt` | time.Time | Required. Defaults to now; rejected if more than 5 minutes ahead or 7 days behind |
 | `Kind` | Kind | `chat` (default), `text`, `embedding` |
-| `Resolution` | *Resolution | Fills every resolution field below that you left empty |
+| `UseCaseEvidence` | *UseCase | Fills every use-case evidence field below that you left empty |
 | `DeploymentID`, `DeploymentRevision`, `Prompt`, `PromptVersionID`, `ModelID` | | Which pin produced the call |
-| `ResolutionSource` | Source | `remote`, `disk`, `bundle`, `manual` |
+| `Source` | Source | `remote`, `disk`, `bundle`, `manual` |
 | `Provider`, `ModelUsed`, `UpstreamProvider` | string | Who actually served it |
 | `Params` | map | The parameters sent |
 | `Input` | *Input | `Variables`, `Messages`, `Text` |
@@ -215,7 +219,7 @@ counted.
 | `StopKind` | StopKind | `stop`, `length`, `tool_call`, `content_filter`, `other`; derived from `FinishReason` when empty |
 | `Error` | *CallError | `Kind` (`http_4xx`, `http_5xx`, `rate_limited`, `timeout`, `transport`, `parse`, `app`), `Status`, `Message` |
 | `Usage` | *Usage | `InputTokens`, `OutputTokens`, `CostUSD`, `CostSource`, `Raw` |
-| `LatencyMS` | int | Measured for you by `WithGeneration` |
+| `LatencyMS` | int | Measured for you by `Track` |
 | `TraceID`, `Sequence`, `EndUserRef` | | Correlation |
 | `Context` | map | Free-form tags. ≤ 2 KB or the server rejects the record |
 | `Metadata` | map | Free app data. ≤ 4 KB or the server rejects the record |
@@ -226,7 +230,7 @@ And do not log secrets — no provider keys, no `PTN_API_KEY`, no user PII beyon
 
 ### Payload policy
 
-Before a record is queued the SDK applies the use case's `payload_policy` from the snapshot, so raw
+Before a record is queued the SDK applies the use case's `payload_policy` from the document, so raw
 text never travels further than the policy allows. `mode: none` drops the input and output;
 `mode: hash` replaces them with a `{sha256, bytes, hashed}` digest the server understands;
 `mode: full` truncates to the same limits the server re-checks, keeping the head and the tail and
@@ -239,9 +243,9 @@ the same decision — and errors and `length` truncations are always kept.
 
 ```go
 client, _ := prompton.New(prompton.Config{Mode: prompton.ModeTest})
-_ = client.SetSnapshot(snapshotJSON)   // or SetSnapshotFile
+_ = client.SetUseCaseDocument(useCaseDocumentJSON)   // or SetUseCaseDocumentFile
 
-res, _ := client.Resolve(ctx, "support_reply", prompton.WithVariables(vars))
+res, _ := client.UseCase(ctx, "support_reply", prompton.WithVariables(vars))
 // … exercise your code …
 
 for _, rec := range client.Recorded() {
@@ -252,7 +256,7 @@ for _, rec := range client.Recorded() {
 ```
 
 `ModeTest` makes no HTTP calls at all and captures monitoring logs in memory in the shape they
-would have been sent. `ModeOffline` resolves from disk and bundle only and captures logs the same
+would have been sent. `ModeOffline` selects from disk and bundle only and captures logs the same
 way — useful for CI and for working on a train. A live client with no `PTN_API_KEY` captures them
 too. The capture is bounded by `LogMaxBuffer` exactly like the send queue, dropping the oldest and
 counting it in `BufferStats().DroppedOverflow`, so a long-running process started without a key
@@ -261,7 +265,7 @@ cannot grow without end.
 ## Conformance
 
 `testdata/conformance/` is the cross-language contract every PromptOn SDK reproduces: prompt
-rendering, resolution, monitoring-log truncation, `stop_kind` normalisation and golden records.
+rendering, use-case selection, monitoring-log truncation, `stop_kind` normalisation and golden records.
 `go test ./...` runs every case. When two SDKs disagree about how a prompt renders or how a log is
 truncated, an app that talks to PromptOn from two languages gets two different answers; these files
 are what prevent that.

@@ -8,14 +8,14 @@ import (
 	"time"
 )
 
-// NewGenerationID returns a fresh UUIDv7, the idempotency key a monitoring-log
-// record is written with. PromptOn stores generation ids in a UUIDv7 column: a
+// NewLogID returns a fresh UUIDv7, the idempotency key a monitoring-log
+// record is written with. PromptOn stores log ids in a UUIDv7 column: a
 // v4 id passes request validation and then fails on write, so the SDK always
 // issues v7.
 //
 // Layout (RFC 9562): 48-bit unix milliseconds | version 7 | 12 random bits |
 // variant 0b10 | 62 random bits. Lowercase hex with dashes.
-func NewGenerationID() string {
+func NewLogID() string {
 	return newUUIDv7At(time.Now())
 }
 
@@ -60,11 +60,11 @@ func formatUUID(b [16]byte) string {
 	return string(out[:])
 }
 
-// GenerationIDTime reads the timestamp a UUIDv7 generation id encodes. It is
+// LogIDTime reads the timestamp a UUIDv7 log id encodes. It is
 // what makes ids sort by time, and it is how a record can be placed on a
 // timeline without a separate field. The second return value is false when the
 // id is not a UUIDv7.
-func GenerationIDTime(id string) (time.Time, bool) {
+func LogIDTime(id string) (time.Time, bool) {
 	if len(id) != 36 || id[8] != '-' || id[13] != '-' || id[14] != '7' {
 		return time.Time{}, false
 	}

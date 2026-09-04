@@ -36,7 +36,7 @@ const (
 )
 
 // CallError describes why a provider call failed. Return one from the function
-// you hand to WithGeneration and the kind, status and message are logged as
+// you hand to Track and the kind, status and message are logged as
 // they are; any other error is classified for you.
 type CallError struct {
 	Kind    string
@@ -128,12 +128,12 @@ type SDKInfo struct {
 	Version string
 }
 
-// GenerationRecord is one monitoring log: one model call the app made.
+// LogRecord is one monitoring log: one model call the app made.
 //
 // Required: UseCase, Model, Status and StartedAt. ID is filled with a fresh
 // UUIDv7 when empty — PromptOn stores generation ids in a UUIDv7 column, so a
 // v4 id passes validation and then fails on write.
-type GenerationRecord struct {
+type LogRecord struct {
 	ID      string
 	UseCase string
 	Kind    Kind
@@ -144,20 +144,23 @@ type GenerationRecord struct {
 	LatencyMS int
 
 	// latencyMeasured distinguishes "the call took under a millisecond" from
-	// "nobody timed it", so WithGeneration always reports a latency and a
+	// "nobody timed it", so Track always reports a latency and a
 	// hand-built record only reports one it actually has.
 	latencyMeasured bool
 
-	// Resolution, when set, fills the deployment, prompt, model and source
+	// UseCaseEvidence, when set, fills the deployment, prompt, model and source
 	// fields this record does not carry itself.
-	Resolution *Resolution
+	UseCaseEvidence *UseCase
+
+	// useCaseResolution is the internal evidence path used by Track.
+	useCaseResolution *useCaseResolution
 
 	DeploymentID       string
 	DeploymentRevision int
 	Prompt             string
 	PromptVersionID    string
 	ModelID            string
-	ResolutionSource   Source
+	Source             Source
 
 	Provider         string
 	ModelUsed        string
@@ -193,10 +196,13 @@ const (
 	StatusError = "error"
 )
 
-// applyResolution fills the resolution evidence from r for every field the
+// applyResolution fills the use-case evidence for every field the
 // caller left empty.
-func (rec *GenerationRecord) applyResolution() {
-	r := rec.Resolution
+func (rec *LogRecord) applyResolution() {
+	r := rec.useCaseResolution
+	if r == nil && rec.UseCaseEvidence != nil {
+		r = rec.UseCaseEvidence.useCaseResolution
+	}
 	if r == nil {
 		return
 	}
@@ -227,15 +233,15 @@ func (rec *GenerationRecord) applyResolution() {
 	if rec.PromptVersionID == "" {
 		rec.PromptVersionID = r.PromptVersionID
 	}
-	if rec.ResolutionSource == "" {
-		rec.ResolutionSource = r.Source
+	if rec.Source == "" {
+		rec.Source = r.Source
 	}
 	if rec.Params == nil {
 		rec.Params = r.Params
 	}
 }
 
-func (rec *GenerationRecord) validate() error {
+func (rec *LogRecord) validate() error {
 	if rec.UseCase == "" {
 		return errors.New("prompton: monitoring log needs a use_case")
 	}
@@ -254,7 +260,7 @@ func (rec *GenerationRecord) validate() error {
 // startedAtWindow is what the server accepts: at most 5 minutes in the future
 // and 7 days in the past. Catching it here turns a silent per-record rejection
 // into an error the caller can see.
-func (rec *GenerationRecord) checkStartedAt(now time.Time) error {
+func (rec *LogRecord) checkStartedAt(now time.Time) error {
 	if rec.StartedAt.After(now.Add(5 * time.Minute)) {
 		return fmt.Errorf("prompton: started_at %s is more than 5 minutes in the future", rec.StartedAt.UTC().Format(time.RFC3339))
 	}
@@ -264,10 +270,10 @@ func (rec *GenerationRecord) checkStartedAt(now time.Time) error {
 	return nil
 }
 
-// toMap renders the record in the wire shape POST /generations accepts. A
+// toMap renders the record in the wire shape POST /logs accepts. A
 // top-level key whose value is null is omitted; nested nulls inside usage are
 // sent and accepted.
-func (rec *GenerationRecord) toMap() map[string]interface{} {
+func (rec *LogRecord) toMap() map[string]interface{} {
 	out := map[string]interface{}{
 		"id":         rec.ID,
 		"use_case":   rec.UseCase,
@@ -283,7 +289,7 @@ func (rec *GenerationRecord) toMap() map[string]interface{} {
 	putString(out, "prompt", rec.Prompt)
 	putString(out, "prompt_version_id", rec.PromptVersionID)
 	putString(out, "model_id", rec.ModelID)
-	putString(out, "resolution_source", string(rec.ResolutionSource))
+	putString(out, "source", string(rec.Source))
 	putString(out, "provider", rec.Provider)
 	putString(out, "model_used", rec.ModelUsed)
 	putString(out, "upstream_provider", rec.UpstreamProvider)

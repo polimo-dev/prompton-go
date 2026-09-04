@@ -58,14 +58,14 @@ func TestConformanceStopKind(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// resolve.json
+// use_case.json
 
-func TestConformanceResolve(t *testing.T) {
+func TestConformanceUseCase(t *testing.T) {
 	var suite struct {
-		Snapshots map[string]json.RawMessage `json:"snapshots"`
+		Documents map[string]json.RawMessage `json:"documents"`
 		Cases     []struct {
 			Name        string                 `json:"name"`
-			SnapshotRef string                 `json:"snapshot_ref"`
+			DocumentRef string                 `json:"document_ref"`
 			UseCase     string                 `json:"use_case"`
 			Prompt      string                 `json:"prompt"`
 			Variables   map[string]interface{} `json:"variables"`
@@ -73,57 +73,58 @@ func TestConformanceResolve(t *testing.T) {
 			Expect      map[string]interface{} `json:"expect"`
 		} `json:"cases"`
 	}
-	loadConformance(t, "resolve.json", &suite)
+	loadConformance(t, "use_case.json", &suite)
 	if len(suite.Cases) == 0 {
-		t.Fatal("no resolve cases loaded")
+		t.Fatal("no use-case cases loaded")
 	}
 
-	snapshots := map[string]*Snapshot{}
-	for name, raw := range suite.Snapshots {
-		snap, err := ParseSnapshot(raw)
+	documents := map[string]*UseCaseDocument{}
+	for name, raw := range suite.Documents {
+		snap, err := ParseUseCaseDocument(raw)
 		if err != nil {
-			t.Fatalf("parse snapshot %s: %v", name, err)
+			t.Fatalf("parse document %s: %v", name, err)
 		}
-		snapshots[name] = snap
+		documents[name] = snap
 	}
 
 	for _, c := range suite.Cases {
 		c := c
 		t.Run(c.Name, func(t *testing.T) {
-			snap := snapshots[c.SnapshotRef]
+			snap := documents[c.DocumentRef]
 			if snap == nil {
-				t.Fatalf("unknown snapshot_ref %q", c.SnapshotRef)
+				t.Fatalf("unknown document_ref %q", c.DocumentRef)
 			}
-			var opts []ResolveOption
+			var opts []UseCaseOption
 			if c.Prompt != "" {
 				opts = append(opts, WithPrompt(c.Prompt))
 			}
 			if c.Variables != nil {
 				opts = append(opts, WithVariables(c.Variables))
 			}
-			res, err := Resolve(snap, c.UseCase, opts...)
+			res, err := resolveSnapshot(snap, c.UseCase, opts...)
 
 			if wantErr, ok := c.Expect["error"].(string); ok {
 				if err == nil {
 					t.Fatalf("expected error %q, got a resolution", wantErr)
 				}
-				assertResolveError(t, err, wantErr, c.Expect)
+				assertUseCaseError(t, err, wantErr, c.Expect)
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
-			got := resolutionToMap(res)
+			res.Source = SourceRemote
+			got := useCaseSelectionToMap(res)
 			gotJSON := string(canonicalJSON(got))
 			wantJSON := string(canonicalJSON(c.Expect))
 			if gotJSON != wantJSON {
-				t.Fatalf("resolution mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
+				t.Fatalf("use-case mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
 			}
 		})
 	}
 }
 
-func assertResolveError(t *testing.T, err error, want string, expect map[string]interface{}) {
+func assertUseCaseError(t *testing.T, err error, want string, expect map[string]interface{}) {
 	t.Helper()
 	switch want {
 	case "missing_variable":
@@ -135,40 +136,45 @@ func assertResolveError(t *testing.T, err error, want string, expect map[string]
 			t.Fatalf("variable %q, want %q", mv.Variable, v)
 		}
 	default:
-		re, ok := err.(*ResolveError)
+		re, ok := err.(*UseCaseError)
 		if !ok {
-			t.Fatalf("expected *ResolveError, got %T (%v)", err, err)
+			t.Fatalf("expected *UseCaseError, got %T (%v)", err, err)
 		}
 		if re.Code != want {
 			t.Fatalf("code %q, want %q", re.Code, want)
 		}
+		if key, ok := expect["key"].(string); ok && re.UseCase != key {
+			t.Fatalf("key %q, want %q", re.UseCase, key)
+		}
 		if p, ok := expect["prompt"].(string); ok && re.Prompt != p {
 			t.Fatalf("prompt %q, want %q", re.Prompt, p)
 		}
-		if list, ok := expect["available_prompts"].([]interface{}); ok {
-			if len(list) != len(re.AvailablePrompts) {
-				t.Fatalf("available_prompts %v, want %v", re.AvailablePrompts, list)
+		if list, ok := expect["prompt_names"].([]interface{}); ok {
+			if len(list) != len(re.PromptNames) {
+				t.Fatalf("prompt_names %v, want %v", re.PromptNames, list)
 			}
 			for i, v := range list {
-				if re.AvailablePrompts[i] != v.(string) {
-					t.Fatalf("available_prompts %v, want %v", re.AvailablePrompts, list)
+				if re.PromptNames[i] != v.(string) {
+					t.Fatalf("prompt_names %v, want %v", re.PromptNames, list)
 				}
 			}
 		}
 	}
 }
 
-// resolutionToMap projects a Resolution onto the shape resolve.json expects,
-// which is also the shape POST /resolve answers with.
-func resolutionToMap(r *Resolution) map[string]interface{} {
+// useCaseSelectionToMap projects a useCaseResolution onto the shape use_case.json expects,
+// which is also the shape prompt endpoint answers with.
+func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 	out := map[string]interface{}{
-		"deployment_id":              r.DeploymentID,
-		"revision":                   r.DeploymentRevision,
-		"kind":                       string(r.Kind),
-		"effective_params":           r.Params,
-		"effective_provider_options": r.ProviderOptions,
-		"prompts":                    r.Prompts,
-		"warnings":                   r.Warnings,
+		"deployment_id":    r.DeploymentID,
+		"key":              r.UseCase,
+		"revision":         r.DeploymentRevision,
+		"kind":             string(r.Kind),
+		"params":           r.Params,
+		"provider_options": r.ProviderOptions,
+		"prompt_names":     r.PromptNames,
+		"source":           string(r.Source),
+		"warnings":         r.Warnings,
 	}
 	if out["warnings"] == nil {
 		out["warnings"] = []string{}
@@ -227,14 +233,14 @@ func TestConformanceTruncation(t *testing.T) {
 			} `json:"buckets"`
 		} `json:"sampling"`
 		Cases []struct {
-			Name       string                 `json:"name"`
-			Generation map[string]interface{} `json:"generation"`
-			Policy     *PayloadPolicy         `json:"policy"`
-			Config     *struct {
+			Name   string                 `json:"name"`
+			Log    map[string]interface{} `json:"log"`
+			Policy *PayloadPolicy         `json:"policy"`
+			Config *struct {
 				HashEndUser bool `json:"hash_end_user"`
 			} `json:"config"`
 			Expect struct {
-				Generation map[string]interface{} `json:"generation"`
+				Log map[string]interface{} `json:"log"`
 			} `json:"expect"`
 		} `json:"cases"`
 	}
@@ -256,20 +262,20 @@ func TestConformanceTruncation(t *testing.T) {
 			if c.Config != nil {
 				cfg.HashEndUser = c.Config.HashEndUser
 			}
-			got := applyPayloadPolicy(c.Generation, c.Policy, cfg)
+			got := applyPayloadPolicy(c.Log, c.Policy, cfg)
 			gotJSON := string(canonicalJSON(got))
-			wantJSON := string(canonicalJSON(c.Expect.Generation))
+			wantJSON := string(canonicalJSON(c.Expect.Log))
 			if gotJSON != wantJSON {
-				t.Fatalf("generation mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
+				t.Fatalf("log mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
 			}
 		})
 	}
 }
 
 // ---------------------------------------------------------------------------
-// generation_record.json
+// log_record.json
 
-func TestConformanceGenerationRecords(t *testing.T) {
+func TestConformanceLogRecords(t *testing.T) {
 	var suite struct {
 		Records []struct {
 			Name        string                 `json:"name"`
@@ -283,7 +289,7 @@ func TestConformanceGenerationRecords(t *testing.T) {
 			Required []string `json:"required"`
 		} `json:"field_rules"`
 	}
-	loadConformance(t, "generation_record.json", &suite)
+	loadConformance(t, "log_record.json", &suite)
 	if len(suite.Records) == 0 {
 		t.Fatal("no golden records loaded")
 	}
@@ -304,14 +310,14 @@ func TestConformanceGenerationRecords(t *testing.T) {
 				}
 			}
 			id, _ := r.Record["id"].(string)
-			if _, ok := GenerationIDTime(id); !ok {
+			if _, ok := LogIDTime(id); !ok {
 				t.Errorf("id %q is not a UUIDv7", id)
 			}
 			if kind, ok := r.Record["kind"].(string); ok && !validKinds[kind] {
 				t.Errorf("kind %q is not one of chat/text/embedding", kind)
 			}
-			if src, ok := r.Record["resolution_source"].(string); ok && !validSources[src] {
-				t.Errorf("resolution_source %q is out of range", src)
+			if src, ok := r.Record["source"].(string); ok && !validSources[src] {
+				t.Errorf("source %q is out of range", src)
 			}
 			if sk, ok := r.Record["stop_kind"].(string); ok && !validStopKinds[sk] {
 				t.Errorf("stop_kind %q is out of range", sk)
@@ -392,15 +398,15 @@ func withExplicitUsageNulls(record map[string]interface{}) map[string]interface{
 	return out
 }
 
-// recordFromGolden reads a golden wire record back into a GenerationRecord, so
+// recordFromGolden reads a golden wire record back into a LogRecord, so
 // the round-trip exercises the builder rather than a hand-written map.
-func recordFromGolden(t *testing.T, m map[string]interface{}) GenerationRecord {
+func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
 	t.Helper()
 	started, err := time.Parse(time.RFC3339Nano, str(m["started_at"]))
 	if err != nil {
 		t.Fatalf("started_at %q: %v", m["started_at"], err)
 	}
-	rec := GenerationRecord{
+	rec := LogRecord{
 		ID:                 str(m["id"]),
 		UseCase:            str(m["use_case"]),
 		Kind:               Kind(str(m["kind"])),
@@ -413,7 +419,7 @@ func recordFromGolden(t *testing.T, m map[string]interface{}) GenerationRecord {
 		Prompt:             str(m["prompt"]),
 		PromptVersionID:    str(m["prompt_version_id"]),
 		ModelID:            str(m["model_id"]),
-		ResolutionSource:   Source(str(m["resolution_source"])),
+		Source:             Source(str(m["source"])),
 		Provider:           str(m["provider"]),
 		ModelUsed:          str(m["model_used"]),
 		UpstreamProvider:   str(m["upstream_provider"]),

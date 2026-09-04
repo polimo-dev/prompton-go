@@ -12,7 +12,7 @@ import (
 
 // Version is the SDK version, sent as the User-Agent and in every monitoring
 // log's sdk field.
-const Version = "0.1.0"
+const Version = "0.2.0"
 
 // SDKName is the name this SDK reports in the sdk field of a monitoring log.
 const SDKName = "prompton-go"
@@ -30,12 +30,12 @@ type Mode string
 
 // The three modes.
 const (
-	// ModeLive is the normal mode: poll the snapshot, send monitoring logs.
+	// ModeLive is the normal mode: poll the use-case document, send monitoring logs.
 	ModeLive Mode = "live"
 	// ModeTest makes no HTTP calls at all and captures monitoring logs in
-	// memory for assertions. Snapshots are injected with SetSnapshot.
+	// memory for assertions. Snapshots are injected with SetUseCaseDocument.
 	ModeTest Mode = "test"
-	// ModeOffline resolves from the disk cache and the bundle only. Monitoring
+	// ModeOffline selects from the disk cache and the bundle only. Monitoring
 	// logs are kept in memory instead of being sent.
 	ModeOffline Mode = "offline"
 )
@@ -64,7 +64,7 @@ type Config struct {
 	// Mode defaults to ModeLive.
 	Mode Mode
 
-	// CacheTTL is how long a snapshot is served from memory before the SDK
+	// CacheTTL is how long a use-case document is served from memory before the SDK
 	// refreshes it with If-None-Match. Default 10s. It is also the base of the
 	// failure backoff.
 	CacheTTL time.Duration
@@ -75,7 +75,7 @@ type Config struct {
 	// HTTPClient replaces the default client. Its own Timeout, if set, wins.
 	HTTPClient *http.Client
 
-	// DiskCachePath is where the snapshot is mirrored. Empty means a default
+	// DiskCachePath is where the use-case document is mirrored. Empty means a default
 	// path under the OS cache (or temp) directory named by project and
 	// environment.
 	DiskCachePath string
@@ -83,9 +83,9 @@ type Config struct {
 	// DisableDiskCache turns the disk tier off entirely.
 	DisableDiskCache bool
 
-	// BundlePath is a snapshot JSON file shipped inside the app, used when
+	// BundlePath is a use-case document JSON file shipped inside the app, used when
 	// memory and disk are both empty. Commit one at migration time so a cold
-	// start with no network still resolves.
+	// start with no network still selects a use case.
 	BundlePath string
 
 	// HashEndUser sends sha256(end_user_ref) instead of the raw reference. An
@@ -96,7 +96,7 @@ type Config struct {
 	// the record to send; returning nil drops the payload.
 	Redact func(map[string]interface{}) map[string]interface{}
 
-	// PayloadDefaults applies to a use case whose snapshot carries no policy.
+	// PayloadDefaults applies to a use case whose document carries no policy.
 	PayloadDefaults PayloadPolicy
 
 	// LogFlushInterval, LogFlushSize and LogFlushBytes are the monitoring-log

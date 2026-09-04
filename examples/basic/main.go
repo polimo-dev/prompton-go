@@ -36,7 +36,7 @@ func main() {
 		// The bundle is the cold-start fallback: committed at migration time and
 		// refreshed by the build, it means a process with no disk cache and no
 		// network still resolves.
-		BundlePath: filepath.Join("examples", "basic", "snapshot.production.json"),
+		BundlePath: filepath.Join("examples", "basic", "use-cases.production.json"),
 	}
 	if os.Getenv("PTN_API_KEY") == "" {
 		// Without a key the SDK makes no remote calls at all and works from the
@@ -64,30 +64,34 @@ func main() {
 
 	variables := map[string]interface{}{"name": "Ada"}
 
-	res, err := client.Resolve(ctx, useCase, prompton.WithVariables(variables))
+	res, err := client.UseCase(ctx, useCase, prompton.WithVariables(variables))
 	if err != nil {
 		log.Fatalf("resolve %s: %v", useCase, err)
 	}
 
-	fmt.Printf("use case      %s (%s)\n", res.UseCase, res.Kind)
+	fmt.Printf("use case      %s (%s)\n", res.Key, res.Kind)
 	fmt.Printf("deployment    %s revision %d\n", res.DeploymentID, res.DeploymentRevision)
-	fmt.Printf("prompt        %s (version %d of %v)\n", res.Prompt, res.PromptVersionNumber, res.Prompts)
+	fmt.Printf("prompt        %s (version %d of %v)\n", res.Prompt, res.PromptVersionNumber, res.PromptNames)
 	fmt.Printf("model         %s via %s\n", res.Model, res.Provider)
 	fmt.Printf("params        %v\n", res.Params)
 	fmt.Printf("config from   %s\n\n", res.Source)
-	for _, m := range res.Messages {
+	messages, err := res.Messages(ctx, variables)
+	if err != nil {
+		log.Fatalf("messages: %v", err)
+	}
+	for _, m := range messages {
 		fmt.Printf("  %-9s %s\n", m.Role, m.Content)
 	}
 	fmt.Println()
 
-	out, err := client.WithGeneration(ctx, res, prompton.CallMeta{
+	out, err := res.Track(ctx, prompton.CallMeta{
 		Variables:  variables,
-		Messages:   res.Messages,
+		Messages:   messages,
 		EndUserRef: "user-42",
 		TraceID:    "example:1",
 		Context:    map[string]interface{}{"language": "en"},
-	}, func(ctx context.Context) (*prompton.Outcome, error) {
-		return fakeProvider(ctx, res)
+	}, func(ctx context.Context) (*prompton.Result, error) {
+		return fakeProvider(ctx, res.Model, messages, res.Params)
 	})
 	if err != nil {
 		log.Fatalf("generation: %v", err)
@@ -110,16 +114,18 @@ func main() {
 // fakeProvider stands in for an OpenAI, Anthropic or OpenRouter client. A real
 // one would send res.Model, res.Params, res.ProviderOptions and res.Messages,
 // with your own provider key.
-func fakeProvider(ctx context.Context, res *prompton.Resolution) (*prompton.Outcome, error) {
+func fakeProvider(ctx context.Context, model string, messages []prompton.Message, params map[string]interface{}) (*prompton.Result, error) {
 	_ = ctx
+	_ = model
+	_ = params
 	last := ""
-	if n := len(res.Messages); n > 0 {
-		last = res.Messages[n-1].Content
+	if n := len(messages); n > 0 {
+		last = messages[n-1].Content
 	}
-	return &prompton.Outcome{
+	return &prompton.Result{
 		Content:      "Hello! (a stand-in answer to: " + last + ")",
 		FinishReason: "stop",
-		ModelUsed:    res.Model,
+		ModelUsed:    model,
 		Usage: &prompton.Usage{
 			InputTokens:  prompton.IntPtr(38),
 			OutputTokens: prompton.IntPtr(9),
@@ -132,7 +138,7 @@ func fakeProvider(ctx context.Context, res *prompton.Resolution) (*prompton.Outc
 func waitForRemote(client *prompton.Client) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if client.SnapshotInfo().Source == prompton.SourceRemote {
+		if client.UseCaseDocumentInfo().Source == prompton.SourceRemote {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

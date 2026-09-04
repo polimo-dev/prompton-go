@@ -4,6 +4,21 @@ All notable changes to this SDK are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.2.0
+
+Breaking vocabulary cleanup for the schema-v4 use-case document contract.
+
+- Public call flow is `UseCase` → `Messages`/`Text` → `Track`; old resolve/resolution/snapshot
+  aliases were removed from the exported API.
+- Bundled examples and conformance fixtures now use `use-cases.<environment>.json`,
+  `use_case.json`, and `log_record.json`.
+- Prompt endpoint decoding follows `key`, `prompt_names`, `source`, `params` and
+  `provider_options`, with `/use-cases/{key}/prompt` as the documented path.
+- Monitoring sends the `/logs` envelope, and public generation records are now `LogRecord`.
+- `ResultFromOpenAI` and `ResultFromAnthropic` normalize provider responses for logs.
+- Use-case documents must carry exact integer `schema_version: 4`; legacy `version`, missing,
+  older, and newer schema versions are rejected.
+
 ## 0.1.0
 
 Initial release.
@@ -15,14 +30,14 @@ Initial release.
   and nudged by the next call. A refresh never blocks or fails a generation: `429` waits out
   `Retry-After`, and `5xx`, timeouts and transport errors back off ×2 up to five minutes while the
   previous document keeps being served.
-- Local resolution of snapshot schema v3, byte for byte what `POST /resolve` answers: deployment
+- Local resolution of snapshot schema v3, byte for byte what `prompt endpoint` answers: deployment
   pin, model, layered params and provider options, prompt selection by name with no silent fallback
   to `default`.
 - A prompt renderer for the Liquid subset PromptOn allows, with `LintTemplate` and
   `TemplateVariables` mirroring the checks the server runs at commit time.
-- `ResolveRemote`, the `POST /resolve` client, cached per use case, prompt and environment, and
+- `RemoteUseCase`, the `prompt endpoint` client, cached per use case, prompt and environment, and
   rendered locally.
-- Monitoring logs through `Log`, `Flush` and `WithGeneration`: app-generated UUIDv7 ids, size, byte
+- Monitoring logs through `Log`, `Flush` and `Track`: app-generated UUIDv7 ids, size, byte
   and time flush triggers, batches of at most 200 records and 5 MB, one batch per environment,
   partial-acceptance handling, retries with the same ids on `429` and `5xx`, a `413` split in half,
   no retry on any other `4xx`, a bounded queue that drops the oldest, and a best-effort drain on
@@ -42,9 +57,9 @@ Fixed before release, after an adversarial review:
 - The in-memory log capture of test mode, offline mode and a live client with no API key honours
   `LogMaxBuffer`, dropping the oldest and counting it in `BufferStats().DroppedOverflow`. A missing
   `PTN_API_KEY` is a configuration mistake to ride out, not an out-of-memory kill.
-- A local `Resolve` refuses `WithEnvironment` for anything but the client's own environment with an
-  `ErrEnvironmentMismatch` `ResolveError` naming both, instead of silently answering from the
-  document it holds. `ResolveRemote` still honours the option.
+- A local `UseCase` refuses `WithEnvironment` for anything but the client's own environment with an
+  `ErrEnvironmentMismatch` `UseCaseError` naming both, instead of silently answering from the
+  document it holds. `RemoteUseCase` still honours the option.
 - A snapshot that names no environment or project is refused like a mismatched one, so an
   unlabelled hand-assembled bundle cannot boot every process.
 - `Log` after `Close` returns `ErrClosed` and counts `BufferStats().DroppedAfterClose` — in every

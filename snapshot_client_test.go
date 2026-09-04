@@ -35,7 +35,7 @@ type snapshotServer struct {
 	statusQueue  []int
 	retryAfter   string
 	lastIfNone   string
-	generations  [][]map[string]interface{}
+	logs         [][]map[string]interface{}
 	genRaw       [][]byte
 	genEnvs      []string
 	genStatus    []int
@@ -49,8 +49,8 @@ func newSnapshotServer(t *testing.T, body string) *snapshotServer {
 	sum := sha256.Sum256([]byte(body))
 	s.etag = `"sha256-` + hex.EncodeToString(sum[:]) + `"`
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/snapshot", s.handleSnapshot)
-	mux.HandleFunc("/api/v1/generations", s.handleGenerations)
+	mux.HandleFunc("/api/v1/use-cases", s.handleSnapshot)
+	mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
 	return s
@@ -85,9 +85,9 @@ func (s *snapshotServer) handleSnapshot(w http.ResponseWriter, r *http.Request) 
 	_, _ = w.Write([]byte(s.body))
 }
 
-func (s *snapshotServer) handleGenerations(w http.ResponseWriter, r *http.Request) {
+func (s *snapshotServer) handleLogs(w http.ResponseWriter, r *http.Request) {
 	var envelope struct {
-		Generations []map[string]interface{} `json:"generations"`
+		Logs []map[string]interface{} `json:"logs"`
 	}
 	buf := make([]byte, 0)
 	tmp := make([]byte, 4096)
@@ -101,7 +101,7 @@ func (s *snapshotServer) handleGenerations(w http.ResponseWriter, r *http.Reques
 	_ = decodeJSON(buf, &envelope)
 
 	s.mu.Lock()
-	s.generations = append(s.generations, envelope.Generations)
+	s.logs = append(s.logs, envelope.Logs)
 	s.genRaw = append(s.genRaw, buf)
 	s.genEnvs = append(s.genEnvs, r.URL.Query().Get("environment"))
 	status := 202
@@ -124,7 +124,7 @@ func (s *snapshotServer) handleGenerations(w http.ResponseWriter, r *http.Reques
 	w.WriteHeader(status)
 	if body == "" {
 		if status == 202 {
-			body = `{"accepted":` + itoaTest(len(envelope.Generations)) + `,"duplicates":0,"rejected":[]}`
+			body = `{"accepted":` + itoaTest(len(envelope.Logs)) + `,"duplicates":0,"rejected":[]}`
 		} else {
 			body = `{"error":{"code":"unavailable","message":"nope","details":{}}}`
 		}
@@ -157,7 +157,7 @@ func (s *snapshotServer) queueSnapshotStatuses(retryAfter string, statuses ...in
 	s.mu.Unlock()
 }
 
-// rawBatches is the exact bytes each /generations request carried, which is
+// rawBatches is the exact bytes each /logs request carried, which is
 // the only way to see what actually went on the wire.
 func (s *snapshotServer) rawBatches() [][]byte {
 	s.mu.Lock()
@@ -173,7 +173,7 @@ func (s *snapshotServer) tracesByEnvironment() map[string][]string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string][]string{}
-	for i, batch := range s.generations {
+	for i, batch := range s.logs {
 		env := ""
 		if i < len(s.genEnvs) {
 			env = s.genEnvs[i]
@@ -189,12 +189,12 @@ func (s *snapshotServer) tracesByEnvironment() map[string][]string {
 func (s *snapshotServer) batches() [][]map[string]interface{} {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([][]map[string]interface{}, len(s.generations))
-	copy(out, s.generations)
+	out := make([][]map[string]interface{}, len(s.logs))
+	copy(out, s.logs)
 	return out
 }
 
-func (s *snapshotServer) scriptGenerations(retryHeader string, statuses []int, bodies []string) {
+func (s *snapshotServer) scriptLogs(retryHeader string, statuses []int, bodies []string) {
 	s.mu.Lock()
 	s.genStatus = append(s.genStatus, statuses...)
 	s.genResponses = append(s.genResponses, bodies...)
@@ -221,7 +221,7 @@ func newTestClient(t *testing.T, cfg Config) *Client {
 func waitForRemoteSnapshot(t *testing.T, c *Client) {
 	t.Helper()
 	waitFor(t, 3*time.Second, "the first snapshot fetch", func() bool {
-		return c.SnapshotInfo().Source == SourceRemote
+		return c.UseCaseDocumentInfo().Source == SourceRemote
 	})
 }
 
@@ -238,9 +238,9 @@ func TestSnapshotServedFromMemoryWithinTTL(t *testing.T) {
 	waitForRemoteSnapshot(t, c)
 
 	for i := 0; i < 50; i++ {
-		res := mustResolve(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
-		if res.Messages[1].Content != "Say hello to Ada." {
-			t.Fatalf("unexpected rendering %q", res.Messages[1].Content)
+		res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+		if res.useCaseResolution.Messages[1].Content != "Say hello to Ada." {
+			t.Fatalf("unexpected rendering %q", res.useCaseResolution.Messages[1].Content)
 		}
 	}
 	if got := server.snapshotRequests(); got != 1 {
@@ -261,11 +261,11 @@ func TestSnapshotRepollsWithIfNoneMatch(t *testing.T) {
 		return server.conditionalRequests() >= 2
 	})
 	// A 304 changes nothing: the document and its ETag stay put.
-	info := c.SnapshotInfo()
+	info := c.UseCaseDocumentInfo()
 	if info.ETag == "" || info.Source != SourceRemote || info.Stale {
 		t.Fatalf("unexpected snapshot info after a 304: %+v", info)
 	}
-	mustResolve(t, c, "greeting")
+	mustUseCase(t, c, "greeting")
 }
 
 func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
@@ -283,7 +283,7 @@ func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
 	server.queueSnapshotStatuses("60", 429, 429, 429)
 
 	waitFor(t, 3*time.Second, "the rate-limited poll", func() bool {
-		return c.SnapshotInfo().Stale
+		return c.UseCaseDocumentInfo().Stale
 	})
 	before := server.snapshotRequests()
 	time.Sleep(80 * time.Millisecond)
@@ -291,7 +291,7 @@ func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
 		t.Fatalf("kept polling through Retry-After: %d then %d requests", before, after)
 	}
 	// The caller never sees the rate limit.
-	if _, err := c.Resolve(testContext(t), "greeting"); err != nil {
+	if _, err := c.UseCase(testContext(t), "greeting"); err != nil {
 		t.Fatalf("resolve failed while rate limited: %v", err)
 	}
 }
@@ -308,9 +308,9 @@ func TestSnapshotServerErrorKeepsServingPreviousDocument(t *testing.T) {
 	server.queueSnapshotStatuses("", 500, 500, 500, 503)
 
 	waitFor(t, 3*time.Second, "the failing poll", func() bool {
-		return c.SnapshotInfo().Stale
+		return c.UseCaseDocumentInfo().Stale
 	})
-	res := mustResolve(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Model != "openai/gpt-4o-mini" {
 		t.Fatalf("stale document did not resolve: %+v", res)
 	}
@@ -330,9 +330,9 @@ func TestSnapshotServerDownFallsBackToDisk(t *testing.T) {
 		CacheTTL:      time.Hour,
 		Timeout:       100 * time.Millisecond,
 	})
-	res := mustResolve(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Source != SourceDisk {
-		t.Fatalf("resolution_source %q, want disk", res.Source)
+		t.Fatalf("source %q, want disk", res.Source)
 	}
 }
 
@@ -348,9 +348,9 @@ func TestSnapshotBundleUsedWhenDiskIsEmpty(t *testing.T) {
 		BundlePath:    bundle,
 		Timeout:       100 * time.Millisecond,
 	})
-	res := mustResolve(t, c, "greeting")
+	res := mustUseCase(t, c, "greeting")
 	if res.Source != SourceBundle {
-		t.Fatalf("resolution_source %q, want bundle", res.Source)
+		t.Fatalf("source %q, want bundle", res.Source)
 	}
 }
 
@@ -378,7 +378,7 @@ func TestSnapshotFromAnotherEnvironmentIsRefused(t *testing.T) {
 				DisableDiskCache: true,
 				Timeout:          100 * time.Millisecond,
 			})
-			if _, err := c.Resolve(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+			if _, err := c.UseCase(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
 				t.Fatalf("the document must not boot a production process, got %v", err)
 			}
 		})
@@ -397,7 +397,7 @@ func TestSnapshotFromAnotherProjectIsRefused(t *testing.T) {
 		DisableDiskCache: true,
 		Timeout:          100 * time.Millisecond,
 	})
-	if _, err := c.Resolve(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+	if _, err := c.UseCase(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("a document from another project must not be used, got %v", err)
 	}
 }
@@ -415,7 +415,7 @@ func TestCorruptDiskCacheIsIgnored(t *testing.T) {
 		BundlePath:    bundle,
 		Timeout:       100 * time.Millisecond,
 	})
-	res := mustResolve(t, c, "greeting")
+	res := mustUseCase(t, c, "greeting")
 	if res.Source != SourceBundle {
 		t.Fatalf("a half-written disk cache must fall through to the bundle, got %q", res.Source)
 	}
@@ -478,7 +478,7 @@ func TestNoAPIKeyMakesNoRemoteCalls(t *testing.T) {
 		BundlePath:       bundle,
 		DisableDiskCache: true,
 	})
-	res := mustResolve(t, c, "greeting")
+	res := mustUseCase(t, c, "greeting")
 	if res.Source != SourceBundle {
 		t.Fatalf("without an API key the SDK must work from the bundle, got %q", res.Source)
 	}
@@ -505,7 +505,7 @@ func TestOfflineModeNeverCallsTheServer(t *testing.T) {
 		Mode:          ModeOffline,
 		DiskCachePath: diskPath,
 	})
-	res := mustResolve(t, c, "greeting")
+	res := mustUseCase(t, c, "greeting")
 	if res.Source != SourceDisk {
 		t.Fatalf("offline mode must read the disk cache, got %q", res.Source)
 	}
@@ -529,22 +529,22 @@ func TestOfflineModeNeverCallsTheServer(t *testing.T) {
 
 func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if _, err := c.Resolve(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+	if _, err := c.UseCase(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("an empty test client should report not ready, got %v", err)
 	}
-	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
-	res := mustResolve(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Source != SourceManual {
-		t.Fatalf("an injected document is resolution_source manual, got %q", res.Source)
+		t.Fatalf("an injected document is source manual, got %q", res.Source)
 	}
-	if err := c.Log(GenerationRecord{
-		Resolution: res,
-		Status:     StatusOK,
-		StartedAt:  time.Now(),
-		Input:      &Input{Variables: map[string]interface{}{"name": "Ada"}},
-		Output:     &Output{Content: "Hello, Ada!"},
+	if err := c.Log(LogRecord{
+		UseCaseEvidence: res,
+		Status:          StatusOK,
+		StartedAt:       time.Now(),
+		Input:           &Input{Variables: map[string]interface{}{"name": "Ada"}},
+		Output:          &Output{Content: "Hello, Ada!"},
 	}); err != nil {
 		t.Fatalf("log: %v", err)
 	}
@@ -555,8 +555,8 @@ func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 	if logs[0]["use_case"] != "greeting" || logs[0]["model"] != "openai/gpt-4o-mini" {
 		t.Fatalf("the resolution did not fill the record: %v", logs[0])
 	}
-	if logs[0]["resolution_source"] != "manual" {
-		t.Fatalf("resolution_source %v, want manual", logs[0]["resolution_source"])
+	if logs[0]["source"] != "manual" {
+		t.Fatalf("source %v, want manual", logs[0]["source"])
 	}
 	c.ClearRecorded()
 	if len(c.Recorded()) != 0 {
@@ -564,7 +564,7 @@ func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 	}
 }
 
-func TestExportSnapshotProducesALoadableBundle(t *testing.T) {
+func TestExportUseCaseDocumentProducesALoadableBundle(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c := newTestClient(t, Config{
 		Host:        server.URL,
@@ -574,9 +574,9 @@ func TestExportSnapshotProducesALoadableBundle(t *testing.T) {
 	})
 	waitForRemoteSnapshot(t, c)
 
-	out := filepath.Join(t.TempDir(), "prompton", "snapshot.production.json")
-	if err := c.ExportSnapshot(out); err != nil {
-		t.Fatalf("ExportSnapshot: %v", err)
+	out := filepath.Join(t.TempDir(), "prompton", "use-cases.production.json")
+	if err := c.ExportUseCaseDocument(out); err != nil {
+		t.Fatalf("ExportUseCaseDocument: %v", err)
 	}
 	entry, err := readSnapshotFile(out, "production", "sdkfixture")
 	if err != nil {
@@ -587,10 +587,26 @@ func TestExportSnapshotProducesALoadableBundle(t *testing.T) {
 	}
 }
 
-func TestUnsupportedSchemaVersionIsRefused(t *testing.T) {
-	_, err := ParseSnapshot([]byte(`{"schema_version":2,"use_cases":{}}`))
-	var schemaErr *UnsupportedSchemaError
-	if !errors.As(err, &schemaErr) || schemaErr.Version != 2 {
-		t.Fatalf("a v2 snapshot must be refused, got %v", err)
+func TestSchemaVersionMustBeExactlyFour(t *testing.T) {
+	cases := []struct {
+		name    string
+		body    string
+		version int
+		missing bool
+	}{
+		{name: "missing", body: `{"use_cases":{}}`, missing: true},
+		{name: "v3", body: `{"schema_version":3,"use_cases":{}}`, version: 3},
+		{name: "future", body: `{"schema_version":5,"use_cases":{}}`, version: 5},
+	}
+	for _, tc := range cases {
+		_, err := ParseUseCaseDocument([]byte(tc.body))
+		var schemaErr *UnsupportedSchemaError
+		if !errors.As(err, &schemaErr) || schemaErr.Version != tc.version || schemaErr.Missing != tc.missing {
+			t.Fatalf("%s: schema_version must be refused exactly, got %v", tc.name, err)
+		}
+	}
+
+	if _, err := ParseUseCaseDocument([]byte(`{"schema_version":4,"use_cases":{}}`)); err != nil {
+		t.Fatalf("schema_version 4 should be accepted: %v", err)
 	}
 }

@@ -17,7 +17,7 @@ import (
 // than raised.
 
 type snapshotEntry struct {
-	snapshot     *Snapshot
+	snapshot     *UseCaseDocument
 	etag         string
 	lastModified string
 	source       Source
@@ -69,8 +69,8 @@ func (s *snapshotStore) markFresh(source Source, at time.Time) {
 	s.entry = &clone
 }
 
-// SnapshotInfo describes the document resolution is currently reading.
-type SnapshotInfo struct {
+// UseCaseDocumentInfo describes the document resolution is currently reading.
+type UseCaseDocumentInfo struct {
 	// Source is remote, disk or bundle; empty when no document is loaded.
 	Source Source
 	// Project and Environment are the document's own, not the configuration's.
@@ -111,7 +111,7 @@ func readSnapshotFile(path, environment, project string) (*snapshotEntry, error)
 	if err != nil {
 		return nil, err
 	}
-	snap, err := ParseSnapshot(data)
+	snap, err := ParseUseCaseDocument(data)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +137,7 @@ func readSnapshotFile(path, environment, project string) (*snapshotEntry, error)
 // legacy bundle with no environment key is exactly the artefact a migration
 // produces, and accepting it in every process is the one thing that must never
 // happen.
-func guardDocument(snap *Snapshot, environment, project string) error {
+func guardDocument(snap *UseCaseDocument, environment, project string) error {
 	if environment != "" && snap.Environment != environment {
 		return fmt.Errorf("prompton: snapshot is for environment %s, this process reads %q", documentLabel(snap.Environment), environment)
 	}

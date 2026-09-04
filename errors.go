@@ -43,15 +43,15 @@ var (
 	ErrNoAPIKey = errors.New("prompton: no API key configured")
 )
 
-// ResolveError is a resolution failure. Code is one of "unknown_use_case",
+// UseCaseError is a resolution failure. Code is one of "unknown_use_case",
 // "unresolved", "unknown_prompt" — matching the reason the server reports in
 // the details of its 404 — or "environment_mismatch", which only local
 // resolution can produce.
-type ResolveError struct {
-	Code             string
-	UseCase          string
-	Prompt           string
-	AvailablePrompts []string
+type UseCaseError struct {
+	Code        string
+	UseCase     string
+	Prompt      string
+	PromptNames []string
 
 	// Environment and DocumentEnvironment are set for "environment_mismatch":
 	// what the call asked for, and what the loaded document actually holds.
@@ -59,7 +59,7 @@ type ResolveError struct {
 	DocumentEnvironment string
 }
 
-func (e *ResolveError) Error() string {
+func (e *UseCaseError) Error() string {
 	switch e.Code {
 	case "unknown_use_case":
 		return fmt.Sprintf("prompton: unknown use case %q", e.UseCase)
@@ -67,10 +67,10 @@ func (e *ResolveError) Error() string {
 		return fmt.Sprintf("prompton: use case %q has no live deployment in this environment", e.UseCase)
 	case "unknown_prompt":
 		return fmt.Sprintf("prompton: use case %q pins no prompt named %q (available: %s)",
-			e.UseCase, e.Prompt, strings.Join(e.AvailablePrompts, ", "))
+			e.UseCase, e.Prompt, strings.Join(e.PromptNames, ", "))
 	case "environment_mismatch":
 		return fmt.Sprintf("prompton: resolve asked for environment %q but this client reads %q; "+
-			"use ResolveRemote, or a second client configured for %q",
+			"use RemoteUseCase, or a second client configured for %q",
 			e.Environment, e.DocumentEnvironment, e.Environment)
 	default:
 		return "prompton: " + e.Code
@@ -78,7 +78,7 @@ func (e *ResolveError) Error() string {
 }
 
 // Unwrap maps the code onto a sentinel so errors.Is works.
-func (e *ResolveError) Unwrap() error {
+func (e *UseCaseError) Unwrap() error {
 	switch e.Code {
 	case "unknown_use_case":
 		return ErrUnknownUseCase
@@ -129,30 +129,30 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("prompton: HTTP %d", e.Status)
 }
 
-// resolveErrorFromAPI turns a server 404 into the same ResolveError local
-// resolution produces, so callers can branch on one error shape.
-func resolveErrorFromAPI(useCase string, e *APIError) error {
+// useCaseErrorFromAPI turns a server 404 into the same UseCaseError local
+// selection produces, so callers can branch on one error shape.
+func useCaseErrorFromAPI(useCase string, e *APIError) error {
 	if e.Status != 404 {
 		return e
 	}
 	reason, _ := e.Details["reason"].(string)
 	switch reason {
 	case "unresolved":
-		return &ResolveError{Code: "unresolved", UseCase: useCase}
+		return &UseCaseError{Code: "unresolved", UseCase: useCase}
 	case "unknown_prompt":
 		prompt, _ := e.Details["prompt"].(string)
 		var available []string
-		if list, ok := e.Details["available_prompts"].([]interface{}); ok {
+		if list, ok := e.Details["prompt_names"].([]interface{}); ok {
 			for _, v := range list {
 				if s, ok := v.(string); ok {
 					available = append(available, s)
 				}
 			}
 		}
-		return &ResolveError{Code: "unknown_prompt", UseCase: useCase, Prompt: prompt, AvailablePrompts: available}
+		return &UseCaseError{Code: "unknown_prompt", UseCase: useCase, Prompt: prompt, PromptNames: available}
 	}
-	if _, ok := e.Details["use_case"]; ok {
-		return &ResolveError{Code: "unknown_use_case", UseCase: useCase}
+	if _, ok := e.Details["key"]; ok {
+		return &UseCaseError{Code: "unknown_use_case", UseCase: useCase}
 	}
 	return e
 }

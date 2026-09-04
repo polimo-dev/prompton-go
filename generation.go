@@ -9,11 +9,11 @@ import (
 //
 //	Log             — you built the record; it is queued and the call returns
 //	Flush           — send the queue now and wait (shutdown, tests, scripts)
-//	WithGeneration  — time your provider call and log it for you
+//	Track  — time your provider call and log it for you
 //
 // None of them ever blocks the provider call.
 
-// CallMeta is what WithGeneration cannot work out for itself: what went in, who
+// CallMeta is what Track cannot work out for itself: what went in, who
 // it was for, and how to correlate it.
 type CallMeta struct {
 	// ID pre-issues the record id, for an app that wants to store it alongside
@@ -34,7 +34,7 @@ type CallMeta struct {
 	Sequence   int
 
 	// Context is a free-form tag map (language, plan, whatever you slice by).
-	// Resolution does not look at it: it is log-only. At most 2 KB or the
+	// useCaseResolution does not look at it: it is log-only. At most 2 KB or the
 	// server rejects the record.
 	Context map[string]interface{}
 
@@ -48,11 +48,11 @@ type CallMeta struct {
 	Environment string
 }
 
-// Outcome is what your provider call produced. Return one from the function you
-// give WithGeneration; return it alongside an error too, when the provider
+// Result is what your provider call produced. Return one from the function you
+// give Track; return it alongside an error too, when the provider
 // answered but the app could not use the answer — the call still counts as
 // spend and as a quality signal.
-type Outcome struct {
+type Result struct {
 	Content   string
 	ToolCalls []interface{}
 
@@ -72,7 +72,7 @@ type Outcome struct {
 	// under metadata.
 	IsByok *bool
 
-	// Result is yours: WithGeneration returns the Outcome unchanged, so this is
+	// Result is yours: Track returns the Result unchanged, so this is
 	// a convenient place to carry the parsed answer back to the caller.
 	Result interface{}
 }
@@ -85,14 +85,14 @@ type Outcome struct {
 // the caller's problem.
 //
 // It fills in the id (a UUIDv7), the started_at, the sdk name and version, and —
-// when the record carries a Resolution — the deployment, prompt, model and
-// resolution_source fields. The payload policy of the use case is applied
+// when the record carries UseCaseEvidence — the deployment, prompt, model and
+// source fields. The payload policy of the use case is applied
 // before the record is queued, so raw text never travels further than the
 // policy allows.
-func (c *Client) Log(rec GenerationRecord) error {
+func (c *Client) Log(rec LogRecord) error {
 	rec.applyResolution()
 	if rec.ID == "" {
-		rec.ID = NewGenerationID()
+		rec.ID = NewLogID()
 	}
 	if rec.StartedAt.IsZero() {
 		rec.StartedAt = c.cfg.now()
@@ -160,11 +160,15 @@ func (c *Client) Log(rec GenerationRecord) error {
 	return c.buffer.enqueue(environment, payload)
 }
 
-// policyFor is the use case's payload policy: the one carried by the resolution
-// if there is one, else the snapshot's, else the client defaults.
-func (c *Client) policyFor(rec *GenerationRecord) *PayloadPolicy {
-	if rec.Resolution != nil && rec.Resolution.PayloadPolicy != nil {
-		return rec.Resolution.PayloadPolicy
+// policyFor is the use case's payload policy: the one carried by the use-case
+// evidence if there is one, else the document's, else the client defaults.
+func (c *Client) policyFor(rec *LogRecord) *PayloadPolicy {
+	evidence := rec.useCaseResolution
+	if evidence == nil && rec.UseCaseEvidence != nil {
+		evidence = rec.UseCaseEvidence.useCaseResolution
+	}
+	if evidence != nil && evidence.PayloadPolicy != nil {
+		return evidence.PayloadPolicy
 	}
 	entry := c.store.get()
 	if entry == nil {
@@ -219,22 +223,22 @@ func (c *Client) ClearRecorded() {
 	c.recordedMu.Unlock()
 }
 
-// WithGeneration times a provider call and logs it.
+// Track times a provider call and logs it.
 //
-// Give it the resolution, what you know about the call, and a function that
+// Give it the use-case evidence, what you know about the call, and a function that
 // actually talks to the provider. Whatever the function returns comes back
 // unchanged — including its error, which propagates after the failure is
 // logged. A panic is logged as an app error and re-panics.
-func (c *Client) WithGeneration(
+func (c *Client) trackResolved(
 	ctx context.Context,
-	res *Resolution,
+	res *useCaseResolution,
 	meta CallMeta,
-	fn func(context.Context) (*Outcome, error),
-) (*Outcome, error) {
+	fn func(context.Context) (*Result, error),
+) (*Result, error) {
 	startedAt := c.cfg.now()
 	start := time.Now()
 
-	logRecord := func(outcome *Outcome, callErr *CallError) {
+	logRecord := func(outcome *Result, callErr *CallError) {
 		rec := buildRecord(res, meta, outcome, callErr, startedAt, int(time.Since(start)/time.Millisecond))
 		if err := c.Log(rec); err != nil {
 			c.warnOnce("log-invalid", "could not log a generation: %v", err)
@@ -261,18 +265,18 @@ func (c *Client) WithGeneration(
 	return outcome, nil
 }
 
-func buildRecord(res *Resolution, meta CallMeta, outcome *Outcome, callErr *CallError, startedAt time.Time, latencyMS int) GenerationRecord {
-	rec := GenerationRecord{
-		ID:              meta.ID,
-		Resolution:      res,
-		StartedAt:       startedAt,
-		LatencyMS:       latencyMS,
-		latencyMeasured: true,
-		TraceID:         meta.TraceID,
-		Sequence:        meta.Sequence,
-		EndUserRef:      meta.EndUserRef,
-		Environment:     meta.Environment,
-		Status:          StatusOK,
+func buildRecord(res *useCaseResolution, meta CallMeta, outcome *Result, callErr *CallError, startedAt time.Time, latencyMS int) LogRecord {
+	rec := LogRecord{
+		ID:                meta.ID,
+		useCaseResolution: res,
+		StartedAt:         startedAt,
+		LatencyMS:         latencyMS,
+		latencyMeasured:   true,
+		TraceID:           meta.TraceID,
+		Sequence:          meta.Sequence,
+		EndUserRef:        meta.EndUserRef,
+		Environment:       meta.Environment,
+		Status:            StatusOK,
 	}
 	if meta.Context != nil {
 		rec.Context = meta.Context

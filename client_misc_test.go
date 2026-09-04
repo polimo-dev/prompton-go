@@ -96,7 +96,7 @@ func TestUserAgentAndAuthorizationAreSent(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// POST /resolve
+// prompt endpoint
 
 type resolveServer struct {
 	*httptest.Server
@@ -125,19 +125,19 @@ func newResolveServer(t *testing.T, body string) *resolveServer {
 }
 
 const resolveBody = `{
-  "use_case": "greeting", "kind": "chat",
+  "key": "greeting", "kind": "chat",
   "deployment": {"id": "0198f2a1-0000-7000-8000-00000000d001", "revision": 3},
-  "prompt": "default", "prompts": ["default", "ko"],
+  "prompt": "default", "prompt_names": ["default", "ko"],
   "model_id": "0198f2a1-0000-7000-8000-00000000e001",
   "model": "openai/gpt-4o-mini", "provider": "openrouter",
-  "effective_params": {"temperature": 0.2},
-  "effective_provider_options": {"only": ["OpenAI"]},
+  "params": {"temperature": 0.2},
+  "provider_options": {"only": ["OpenAI"]},
   "prompt_version": {"id": "0198f2a1-0000-7000-8000-00000000a001", "number": 2},
   "messages": [{"role": "system", "content": "You greet people."}, {"role": "user", "content": "Say hello to {{ name }}."}],
   "warnings": [], "etag": "sha256-abc"
 }`
 
-func TestResolveRemoteCachesAndRendersLocally(t *testing.T) {
+func TestRemoteUseCaseCachesAndRendersLocally(t *testing.T) {
 	server := newResolveServer(t, resolveBody)
 	c := newTestClient(t, Config{
 		Host: server.URL, APIKey: "ptn_sdkfixture_test", Environment: "production",
@@ -145,59 +145,96 @@ func TestResolveRemoteCachesAndRendersLocally(t *testing.T) {
 	})
 
 	for i := 0; i < 5; i++ {
-		res, err := c.ResolveRemote(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+		res, err := c.RemoteUseCase(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 		if err != nil {
-			t.Fatalf("ResolveRemote: %v", err)
+			t.Fatalf("RemoteUseCase: %v", err)
 		}
-		if res.Messages[1].Content != "Say hello to Ada." {
-			t.Fatalf("rendered %q", res.Messages[1].Content)
+		messages, err := res.Messages(testContext(t), nil)
+		if err != nil {
+			t.Fatalf("Messages: %v", err)
+		}
+		if messages[1].Content != "Say hello to Ada." {
+			t.Fatalf("rendered %q", messages[1].Content)
 		}
 		if res.Model != "openai/gpt-4o-mini" || res.DeploymentRevision != 3 {
-			t.Fatalf("unexpected resolution: %+v", res)
+			t.Fatalf("unexpected use case: %+v", res)
 		}
 	}
 	if got := atomic.LoadInt32(&server.calls); got != 1 {
-		t.Fatalf("POST /resolve called %d times within the TTL, want 1", got)
+		t.Fatalf("prompt endpoint called %d times within the TTL, want 1", got)
 	}
 }
 
-func TestResolveRemoteServesTheCachedAnswerOn429(t *testing.T) {
+func TestRemoteUseCaseDecodesSourceWithRemoteFallback(t *testing.T) {
+	withSource := strings.Replace(resolveBody, `"etag": "sha256-abc"`, `"source": "disk", "etag": "sha256-abc"`, 1)
+	server := newResolveServer(t, withSource)
+	c := newTestClient(t, Config{
+		Host: server.URL, APIKey: "ptn_sdkfixture_test", Environment: "production",
+		Mode: ModeTest, CacheTTL: 0,
+	})
+	res, err := c.RemoteUseCase(testContext(t), "greeting")
+	if err != nil {
+		t.Fatalf("RemoteUseCase: %v", err)
+	}
+	if res.Source != SourceDisk {
+		t.Fatalf("source %q, want disk", res.Source)
+	}
+
+	server = newResolveServer(t, resolveBody)
+	c = newTestClient(t, Config{
+		Host: server.URL, APIKey: "ptn_sdkfixture_test", Environment: "production",
+		Mode: ModeTest, CacheTTL: 0,
+	})
+	res, err = c.RemoteUseCase(testContext(t), "greeting")
+	if err != nil {
+		t.Fatalf("RemoteUseCase: %v", err)
+	}
+	if res.Source != SourceRemote {
+		t.Fatalf("source %q, want remote", res.Source)
+	}
+}
+
+func TestRemoteUseCaseServesTheCachedAnswerOn429(t *testing.T) {
 	server := newResolveServer(t, resolveBody)
 	clock := newFakeClock()
 	c := newTestClient(t, Config{
 		Host: server.URL, APIKey: "ptn_sdkfixture_test", Environment: "production",
 		Mode: ModeTest, CacheTTL: time.Second, now: clock.Now,
 	})
-	if _, err := c.ResolveRemote(testContext(t), "greeting"); err != nil {
-		t.Fatalf("first ResolveRemote: %v", err)
+	if _, err := c.RemoteUseCase(testContext(t), "greeting"); err != nil {
+		t.Fatalf("first RemoteUseCase: %v", err)
 	}
 	atomic.StoreInt32(&server.status, 429)
 	clock.Advance(2 * time.Second)
 
-	res, err := c.ResolveRemote(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res, err := c.RemoteUseCase(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if err != nil {
 		t.Fatalf("a rate-limited resolve must serve the cached answer: %v", err)
 	}
-	if res.Messages[1].Content != "Say hello to Ada." {
-		t.Fatalf("rendered %q from the cached template", res.Messages[1].Content)
+	messages, err := res.Messages(testContext(t), nil)
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	if messages[1].Content != "Say hello to Ada." {
+		t.Fatalf("rendered %q from the cached template", messages[1].Content)
 	}
 }
 
-func TestResolveRemoteMapsA404ToTheSameErrorAsLocalResolution(t *testing.T) {
+func TestRemoteUseCaseMapsA404ToTheSameErrorAsLocalUseCase(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(404)
-		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no prompt","details":{"reason":"unknown_prompt","prompt":"fr","available_prompts":["default","ko"]}}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no prompt","details":{"reason":"unknown_prompt","prompt":"fr","prompt_names":["default","ko"]}}}`))
 	}))
 	defer srv.Close()
 	c := newTestClient(t, Config{Host: srv.URL, APIKey: "ptn_sdkfixture_test", Mode: ModeTest})
 
-	_, err := c.ResolveRemote(testContext(t), "greeting", WithPrompt("fr"))
+	_, err := c.RemoteUseCase(testContext(t), "greeting", WithPrompt("fr"))
 	if !errors.Is(err, ErrUnknownPrompt) {
 		t.Fatalf("error %v, want ErrUnknownPrompt", err)
 	}
-	var re *ResolveError
-	if !errors.As(err, &re) || re.Prompt != "fr" || len(re.AvailablePrompts) != 2 {
+	var re *UseCaseError
+	if !errors.As(err, &re) || re.Prompt != "fr" || len(re.PromptNames) != 2 {
 		t.Fatalf("the 404 details were lost: %+v", err)
 	}
 }
@@ -205,18 +242,18 @@ func TestResolveRemoteMapsA404ToTheSameErrorAsLocalResolution(t *testing.T) {
 // ---------------------------------------------------------------------------
 // resolution errors
 
-func TestResolutionErrorsAreDistinguishable(t *testing.T) {
-	snap, err := ParseSnapshot([]byte(testSnapshotJSON))
+func TestUseCaseErrorsAreDistinguishable(t *testing.T) {
+	snap, err := ParseUseCaseDocument([]byte(testSnapshotJSON))
 	if err != nil {
-		t.Fatalf("ParseSnapshot: %v", err)
+		t.Fatalf("ParseUseCaseDocument: %v", err)
 	}
-	if _, err := Resolve(snap, "nope"); !errors.Is(err, ErrUnknownUseCase) {
+	if _, err := resolveSnapshot(snap, "nope"); !errors.Is(err, ErrUnknownUseCase) {
 		t.Fatalf("want ErrUnknownUseCase, got %v", err)
 	}
-	if _, err := Resolve(snap, "greeting", WithPrompt("fr")); !errors.Is(err, ErrUnknownPrompt) {
+	if _, err := resolveSnapshot(snap, "greeting", WithPrompt("fr")); !errors.Is(err, ErrUnknownPrompt) {
 		t.Fatalf("want ErrUnknownPrompt, got %v", err)
 	}
-	if _, err := Resolve(snap, "greeting", WithVariables(map[string]interface{}{})); err == nil {
+	if _, err := resolveSnapshot(snap, "greeting", WithVariables(map[string]interface{}{})); err == nil {
 		t.Fatal("a missing variable must be an error")
 	} else {
 		var mv *MissingVariableError
@@ -227,15 +264,15 @@ func TestResolutionErrorsAreDistinguishable(t *testing.T) {
 }
 
 func TestResolveNeverFallsBackToDefaultPrompt(t *testing.T) {
-	snap, _ := ParseSnapshot([]byte(testSnapshotJSON))
-	if _, err := Resolve(snap, "greeting", WithPrompt("ko")); err == nil {
+	snap, _ := ParseUseCaseDocument([]byte(testSnapshotJSON))
+	if _, err := resolveSnapshot(snap, "greeting", WithPrompt("fr")); err == nil {
 		t.Fatal("an unpinned prompt name must fail rather than quietly serve the default")
 	}
 }
 
 func TestRenderIsPureAndRepeatable(t *testing.T) {
-	snap, _ := ParseSnapshot([]byte(testSnapshotJSON))
-	res, err := Resolve(snap, "greeting")
+	snap, _ := ParseUseCaseDocument([]byte(testSnapshotJSON))
+	res, err := resolveSnapshot(snap, "greeting")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -248,7 +285,7 @@ func TestRenderIsPureAndRepeatable(t *testing.T) {
 		t.Fatalf("render: %v", err)
 	}
 	if first[1].Content != "Say hello to Ada." || second[1].Content != "Say hello to Bo." {
-		t.Fatalf("rendering mutated the resolution: %q then %q", first[1].Content, second[1].Content)
+		t.Fatalf("rendering mutated the use case: %q then %q", first[1].Content, second[1].Content)
 	}
 	if res.Messages[1].Content != "Say hello to {{ name }}." {
 		t.Fatalf("the original template was overwritten: %q", res.Messages[1].Content)
@@ -259,7 +296,7 @@ func TestRenderIsPureAndRepeatable(t *testing.T) {
 // UUIDv7
 
 func TestUUIDv7ShapeAndOrdering(t *testing.T) {
-	id := NewGenerationID()
+	id := NewLogID()
 	if len(id) != 36 {
 		t.Fatalf("id %q is not 36 characters", id)
 	}
@@ -270,7 +307,7 @@ func TestUUIDv7ShapeAndOrdering(t *testing.T) {
 	if !strings.ContainsRune("89ab", rune(variant)) {
 		t.Fatalf("id %q has variant nibble %q, want 8-b", id, string(variant))
 	}
-	if _, ok := GenerationIDTime(id); !ok {
+	if _, ok := LogIDTime(id); !ok {
 		t.Fatalf("id %q carries no timestamp", id)
 	}
 
@@ -281,13 +318,13 @@ func TestUUIDv7ShapeAndOrdering(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for i := 0; i < 2000; i++ {
-		id := NewGenerationID()
+		id := NewLogID()
 		if seen[id] {
 			t.Fatalf("duplicate id %q", id)
 		}
 		seen[id] = true
 	}
-	if _, ok := GenerationIDTime("not-a-uuid"); ok {
+	if _, ok := LogIDTime("not-a-uuid"); ok {
 		t.Fatal("a non-UUID must not report a timestamp")
 	}
 }
@@ -318,16 +355,16 @@ func TestTemplateHelpersAreExported(t *testing.T) {
 func TestPayloadPolicyFromTheSnapshotIsApplied(t *testing.T) {
 	hashPolicy := strings.Replace(testSnapshotJSON, `"mode": "full"`, `"mode": "hash"`, 1)
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetSnapshot([]byte(hashPolicy)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+	if err := c.SetUseCaseDocument([]byte(hashPolicy)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
-	res := mustResolve(t, c, "greeting")
-	if err := c.Log(GenerationRecord{
-		Resolution: res,
-		Status:     StatusOK,
-		StartedAt:  time.Now(),
-		Input:      &Input{Text: "a secret prompt"},
-		Output:     &Output{Content: "a secret answer"},
+	res := mustUseCase(t, c, "greeting")
+	if err := c.Log(LogRecord{
+		UseCaseEvidence: res,
+		Status:          StatusOK,
+		StartedAt:       time.Now(),
+		Input:           &Input{Text: "a secret prompt"},
+		Output:          &Output{Content: "a secret answer"},
 	}); err != nil {
 		t.Fatalf("log: %v", err)
 	}
@@ -398,38 +435,38 @@ func TestCanonicalJSONSubstitutesInvalidUTF8(t *testing.T) {
 
 func TestResolveRefusesAnEnvironmentOtherThanTheClients(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
 
-	_, err := c.Resolve(testContext(t), "greeting", WithEnvironment("staging"))
+	_, err := c.UseCase(testContext(t), "greeting", WithEnvironment("staging"))
 	if !errors.Is(err, ErrEnvironmentMismatch) {
 		t.Fatalf("a local resolve must refuse another environment, got %v", err)
 	}
-	var re *ResolveError
+	var re *UseCaseError
 	if !errors.As(err, &re) || re.Environment != "staging" || re.DocumentEnvironment != "production" {
 		t.Fatalf("the mismatch must name both environments: %+v", err)
 	}
 
 	// The client's own environment is accepted, and so is saying nothing.
-	if _, err := c.Resolve(testContext(t), "greeting", WithEnvironment("production")); err != nil {
+	if _, err := c.UseCase(testContext(t), "greeting", WithEnvironment("production")); err != nil {
 		t.Fatalf("resolve for the client's own environment: %v", err)
 	}
-	if _, err := c.Resolve(testContext(t), "greeting"); err != nil {
+	if _, err := c.UseCase(testContext(t), "greeting"); err != nil {
 		t.Fatalf("resolve without an environment: %v", err)
 	}
 
 	// The pure resolver guards on the document it was handed.
-	snap, err := ParseSnapshot([]byte(testSnapshotJSON))
+	snap, err := ParseUseCaseDocument([]byte(testSnapshotJSON))
 	if err != nil {
-		t.Fatalf("ParseSnapshot: %v", err)
+		t.Fatalf("ParseUseCaseDocument: %v", err)
 	}
-	if _, err := Resolve(snap, "greeting", WithEnvironment("staging")); !errors.Is(err, ErrEnvironmentMismatch) {
+	if _, err := resolveSnapshot(snap, "greeting", WithEnvironment("staging")); !errors.Is(err, ErrEnvironmentMismatch) {
 		t.Fatalf("Resolve must refuse another environment, got %v", err)
 	}
 }
 
-func TestResolveRemoteStillHonoursWithEnvironment(t *testing.T) {
+func TestRemoteUseCaseStillHonoursWithEnvironment(t *testing.T) {
 	var asked atomic.Value
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -445,8 +482,8 @@ func TestResolveRemoteStillHonoursWithEnvironment(t *testing.T) {
 	c := newTestClient(t, Config{
 		Host: srv.URL, APIKey: "ptn_sdkfixture_test", Environment: "production", Mode: ModeTest,
 	})
-	if _, err := c.ResolveRemote(testContext(t), "greeting", WithEnvironment("staging")); err != nil {
-		t.Fatalf("ResolveRemote: %v", err)
+	if _, err := c.RemoteUseCase(testContext(t), "greeting", WithEnvironment("staging")); err != nil {
+		t.Fatalf("RemoteUseCase: %v", err)
 	}
 	if got, _ := asked.Load().(string); got != "staging" {
 		t.Fatalf("the server was asked for environment %q, want staging", got)

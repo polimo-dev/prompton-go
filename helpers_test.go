@@ -39,7 +39,7 @@ func quietLogger(t *testing.T) func(string, ...interface{}) {
 }
 
 const testSnapshotJSON = `{
-  "schema_version": 3,
+  "schema_version": 4,
   "project": "sdkfixture",
   "environment": "production",
   "use_cases": {
@@ -58,7 +58,10 @@ const testSnapshotJSON = `{
       "model_id": "0198f2a1-0000-7000-8000-00000000e001",
       "params": {"temperature": 0.2},
       "provider_options": {},
-      "prompt_pins": {"default": "0198f2a1-0000-7000-8000-00000000a001"}
+      "prompt_pins": {
+        "default": "0198f2a1-0000-7000-8000-00000000a001",
+        "ko": "0198f2a1-0000-7000-8000-00000000a002"
+      }
     }
   },
   "prompt_versions": {
@@ -68,6 +71,14 @@ const testSnapshotJSON = `{
       "number": 2,
       "engine": "liquid",
       "messages": [{"role": "system", "content": "You greet people."}, {"role": "user", "content": "Say hello to {{ name }}."}],
+      "text_template": null
+    },
+    "0198f2a1-0000-7000-8000-00000000a002": {
+      "id": "0198f2a1-0000-7000-8000-00000000a002",
+      "prompt_id": "0198f2a1-0000-7000-8000-00000000b002",
+      "number": 1,
+      "engine": "liquid",
+      "messages": [{"role": "system", "content": "너는 친절한 인사 도우미다."}, {"role": "user", "content": "{{ name }}님에게 인사해줘."}],
       "text_template": null
     }
   },
@@ -86,13 +97,13 @@ const testSnapshotJSON = `{
 }`
 
 func stagingSnapshotJSON() string {
-	return `{"schema_version":3,"project":"sdkfixture","environment":"staging","use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
+	return `{"schema_version":4,"project":"sdkfixture","environment":"staging","use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
 }
 
 // unlabelledSnapshotJSON is a valid v3 document that names neither environment
 // nor project — the shape a hand-assembled or legacy bundle has.
 func unlabelledSnapshotJSON() string {
-	return `{"schema_version":3,"use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
+	return `{"schema_version":4,"use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
 }
 
 func writeFile(t *testing.T, dir, name, content string) string {
@@ -120,17 +131,17 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func mustResolve(t *testing.T, c *Client, useCase string, opts ...ResolveOption) *Resolution {
+func mustUseCase(t *testing.T, c *Client, useCase string, opts ...UseCaseOption) *UseCase {
 	t.Helper()
-	res, err := c.Resolve(testContext(t), useCase, opts...)
+	res, err := c.UseCase(testContext(t), useCase, opts...)
 	if err != nil {
 		t.Fatalf("resolve %s: %v", useCase, err)
 	}
 	return res
 }
 
-func sampleRecord(i int) GenerationRecord {
-	return GenerationRecord{
+func sampleRecord(i int) LogRecord {
+	return LogRecord{
 		UseCase:   "greeting",
 		Model:     "openai/gpt-4o-mini",
 		Status:    StatusOK,

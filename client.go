@@ -170,13 +170,13 @@ func (c *Client) warnOnce(key, format string, args ...interface{}) {
 // blocking or failing this call.
 //
 // Pass WithVariables to get the prompt rendered; without it the raw templates
-// come back, which is also what POST /resolve does.
+// come back, which is also what prompt endpoint does.
 //
 // WithEnvironment is refused here rather than ignored: this client holds one
 // environment's document, and answering a staging call from the production pin
 // is precisely the accident the environment guard exists to prevent. Use
-// ResolveRemote, or a second client, for another environment.
-func (c *Client) Resolve(ctx context.Context, useCase string, opts ...ResolveOption) (*Resolution, error) {
+// RemoteUseCase, or a second client, for another environment.
+func (c *Client) resolve(ctx context.Context, useCase string, opts ...UseCaseOption) (*useCaseResolution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -191,7 +191,7 @@ func (c *Client) Resolve(ctx context.Context, useCase string, opts ...ResolveOpt
 	if c.isStale(entry) {
 		c.nudgeRefresh()
 	}
-	res, err := Resolve(entry.snapshot, useCase, opts...)
+	res, err := resolveSnapshot(entry.snapshot, useCase, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -208,7 +208,7 @@ func (c *Client) PromptNames(useCase string) ([]string, error) {
 		return nil, ErrNotReady
 	}
 	if _, ok := entry.snapshot.UseCases[useCase]; !ok {
-		return nil, &ResolveError{Code: "unknown_use_case", UseCase: useCase}
+		return nil, &UseCaseError{Code: "unknown_use_case", UseCase: useCase}
 	}
 	return entry.snapshot.PromptNames(useCase), nil
 }
@@ -227,13 +227,13 @@ func (c *Client) nudgeRefresh() {
 	}
 }
 
-// SnapshotInfo reports which document resolution is reading and how old it is.
-func (c *Client) SnapshotInfo() SnapshotInfo {
+// UseCaseDocumentInfo reports which document resolution is reading and how old it is.
+func (c *Client) UseCaseDocumentInfo() UseCaseDocumentInfo {
 	entry := c.store.get()
 	if entry == nil {
-		return SnapshotInfo{}
+		return UseCaseDocumentInfo{}
 	}
-	return SnapshotInfo{
+	return UseCaseDocumentInfo{
 		Source:       entry.source,
 		Project:      entry.snapshot.Project,
 		Environment:  entry.snapshot.Environment,
@@ -246,8 +246,8 @@ func (c *Client) SnapshotInfo() SnapshotInfo {
 	}
 }
 
-// Snapshot returns the document resolution is currently reading, or nil.
-func (c *Client) Snapshot() *Snapshot {
+// UseCaseDocument returns the document resolution is currently reading, or nil.
+func (c *Client) UseCaseDocument() *UseCaseDocument {
 	entry := c.store.get()
 	if entry == nil {
 		return nil
@@ -255,11 +255,11 @@ func (c *Client) Snapshot() *Snapshot {
 	return entry.snapshot
 }
 
-// SetSnapshot installs a document by hand, reported as resolution_source
+// SetUseCaseDocument installs a document by hand, reported as source
 // "manual". It is how test mode is seeded, and how a script pins a known
 // configuration.
-func (c *Client) SetSnapshot(data []byte) error {
-	snap, err := ParseSnapshot(data)
+func (c *Client) SetUseCaseDocument(data []byte) error {
+	snap, err := ParseUseCaseDocument(data)
 	if err != nil {
 		return err
 	}
@@ -267,19 +267,19 @@ func (c *Client) SetSnapshot(data []byte) error {
 	return nil
 }
 
-// SetSnapshotFile installs a document from a file.
-func (c *Client) SetSnapshotFile(path string) error {
+// SetUseCaseDocumentFile installs a document from a file.
+func (c *Client) SetUseCaseDocumentFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return c.SetSnapshot(data)
+	return c.SetUseCaseDocument(data)
 }
 
-// ExportSnapshot writes the current document and its sidecar to path, which is
+// ExportUseCaseDocument writes the current document and its sidecar to path, which is
 // how a bundle is built: run it in CI and commit the result so a cold start
 // with no disk cache and no network still resolves.
-func (c *Client) ExportSnapshot(path string) error {
+func (c *Client) ExportUseCaseDocument(path string) error {
 	entry := c.store.get()
 	if entry == nil {
 		return ErrNotReady
@@ -368,7 +368,7 @@ func (c *Client) refreshOnce(ctx context.Context, force bool) (time.Duration, er
 		c.refreshSucceeded()
 		return c.cfg.CacheTTL, nil
 	case 200:
-		snap, parseErr := ParseSnapshot(resp.Body)
+		snap, parseErr := ParseUseCaseDocument(resp.Body)
 		if parseErr != nil {
 			return c.refreshFailed(parseErr, resp), parseErr
 		}
@@ -445,7 +445,7 @@ func (c *Client) refreshFailed(err error, resp *snapshotResponse) time.Duration 
 	return delay
 }
 
-func (c *Client) persistDisk(snap *Snapshot, resp *snapshotResponse, fetchedAt time.Time) {
+func (c *Client) persistDisk(snap *UseCaseDocument, resp *snapshotResponse, fetchedAt time.Time) {
 	if c.cfg.DisableDiskCache || c.cfg.DiskCachePath == "" {
 		return
 	}
@@ -462,14 +462,14 @@ func (c *Client) persistDisk(snap *Snapshot, resp *snapshotResponse, fetchedAt t
 }
 
 // ---------------------------------------------------------------------------
-// POST /resolve
+// prompt endpoint
 
-// ResolveRemote asks the server to resolve, which is the simple path and the
+// RemoteUseCase asks the server to resolve, which is the simple path and the
 // smoke test for a deployment. It is not for a hot loop: the answer is cached
 // for the same TTL as the snapshot, per use case, prompt and environment, and
 // variables are rendered locally against that cached template. When the server
 // rate limits, fails or is unreachable, the cached answer is served.
-func (c *Client) ResolveRemote(ctx context.Context, useCase string, opts ...ResolveOption) (*Resolution, error) {
+func (c *Client) RemoteUseCase(ctx context.Context, useCase string, opts ...UseCaseOption) (*UseCase, error) {
 	o := buildResolveOptions(opts)
 	env := o.Environment
 	if env == "" {
@@ -496,10 +496,10 @@ func (c *Client) ResolveRemote(ctx context.Context, useCase string, opts ...Reso
 		if err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 && apiErr.Status != 429 {
-				return nil, resolveErrorFromAPI(useCase, apiErr)
+				return nil, useCaseErrorFromAPI(useCase, apiErr)
 			}
 			if hasCached {
-				c.warnOnce("resolve-remote", "POST /resolve failed (%v); serving the cached answer", err)
+				c.warnOnce("resolve-remote", "prompt endpoint failed (%v); serving the cached answer", err)
 				response = cached.response
 			} else {
 				return nil, err
@@ -518,25 +518,28 @@ func (c *Client) ResolveRemote(ctx context.Context, useCase string, opts ...Reso
 			return nil, err
 		}
 	}
-	return res, nil
+	return newUseCase(c, res), nil
 }
 
-func resolutionFromResponse(useCase string, r *resolveResponse) *Resolution {
-	res := &Resolution{
+func resolutionFromResponse(useCase string, r *resolveResponse) *useCaseResolution {
+	res := &useCaseResolution{
 		UseCase:            useCase,
 		Kind:               Kind(r.Kind),
 		DeploymentID:       r.Deployment.ID,
 		DeploymentRevision: r.Deployment.Revision,
-		Prompts:            r.Prompts,
-		Params:             r.EffectiveParams,
-		ProviderOptions:    r.EffectiveProviderOptions,
+		PromptNames:        r.PromptNames,
+		Params:             r.Params,
+		ProviderOptions:    r.ProviderOptions,
 		Messages:           append([]Message(nil), r.Messages...),
 		Source:             SourceRemote,
 		ETag:               r.ETag,
 		Warnings:           r.Warnings,
 	}
-	if res.Prompts == nil {
-		res.Prompts = []string{}
+	if r.Source != "" {
+		res.Source = Source(r.Source)
+	}
+	if res.PromptNames == nil {
+		res.PromptNames = []string{}
 	}
 	if r.Prompt != nil {
 		res.Prompt = *r.Prompt

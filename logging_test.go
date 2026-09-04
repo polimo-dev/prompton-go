@@ -48,36 +48,36 @@ func logN(t *testing.T, c *Client, n int) {
 
 func TestLogRequiresTheFiveMandatoryFields(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest})
-	if err := c.Log(GenerationRecord{Model: "m", Status: StatusOK, StartedAt: time.Now()}); err == nil {
+	if err := c.Log(LogRecord{Model: "m", Status: StatusOK, StartedAt: time.Now()}); err == nil {
 		t.Fatal("a record with no use_case must be rejected")
 	}
-	if err := c.Log(GenerationRecord{UseCase: "u", Status: StatusOK, StartedAt: time.Now()}); err == nil {
+	if err := c.Log(LogRecord{UseCase: "u", Status: StatusOK, StartedAt: time.Now()}); err == nil {
 		t.Fatal("a record with no model must be rejected")
 	}
-	if err := c.Log(GenerationRecord{UseCase: "u", Model: "m", Status: "weird", StartedAt: time.Now()}); err == nil {
+	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: "weird", StartedAt: time.Now()}); err == nil {
 		t.Fatal("a record with an unknown status must be rejected")
 	}
 	// An unset started_at defaults to now; one outside the window the server
 	// accepts is refused here rather than coming back in `rejected`.
-	if err := c.Log(GenerationRecord{UseCase: "u", Model: "m", Status: StatusOK}); err != nil {
+	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK}); err != nil {
 		t.Fatalf("an unset started_at should default to now: %v", err)
 	}
-	if err := c.Log(GenerationRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(-8 * 24 * time.Hour)}); err == nil {
+	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(-8 * 24 * time.Hour)}); err == nil {
 		t.Fatal("a started_at more than 7 days in the past must be rejected")
 	}
-	if err := c.Log(GenerationRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(time.Hour)}); err == nil {
+	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(time.Hour)}); err == nil {
 		t.Fatal("a started_at more than 5 minutes in the future must be rejected")
 	}
 }
 
 func TestLogFillsIDAndSDK(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest})
-	if err := c.Log(GenerationRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now()}); err != nil {
+	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now()}); err != nil {
 		t.Fatalf("log: %v", err)
 	}
 	rec := c.Recorded()[0]
 	id, _ := rec["id"].(string)
-	if _, ok := GenerationIDTime(id); !ok {
+	if _, ok := LogIDTime(id); !ok {
 		t.Fatalf("id %q is not a UUIDv7", id)
 	}
 	sdk, _ := rec["sdk"].(map[string]interface{})
@@ -135,7 +135,7 @@ func TestBufferCapsBatchesAt200Records(t *testing.T) {
 
 func TestBufferRetriesTheSameBatchAfter429(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("30", []int{429}, []string{""})
+	server.scriptLogs("30", []int{429}, []string{""})
 	c, clock := newLoggingClient(t, server, nil)
 	logN(t, c, 3)
 
@@ -175,7 +175,7 @@ func TestBufferRetriesTheSameBatchAfter429(t *testing.T) {
 
 func TestBufferRetriesAfter5xx(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("", []int{503}, []string{""})
+	server.scriptLogs("", []int{503}, []string{""})
 	c, clock := newLoggingClient(t, server, nil)
 	logN(t, c, 2)
 
@@ -193,7 +193,7 @@ func TestBufferRetriesAfter5xx(t *testing.T) {
 
 func TestBufferSplitsA413BatchInHalf(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("", []int{413}, []string{`{"error":{"code":"payload_too_large","message":"too big","details":{}}}`})
+	server.scriptLogs("", []int{413}, []string{`{"error":{"code":"payload_too_large","message":"too big","details":{}}}`})
 	c, _ := newLoggingClient(t, server, nil)
 	logN(t, c, 4)
 
@@ -212,7 +212,7 @@ func TestBufferSplitsA413BatchInHalf(t *testing.T) {
 
 func TestBufferDropsOnOther4xx(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("", []int{400}, []string{`{"error":{"code":"invalid_request","message":"nope","details":{}}}`})
+	server.scriptLogs("", []int{400}, []string{`{"error":{"code":"invalid_request","message":"nope","details":{}}}`})
 	c, _ := newLoggingClient(t, server, nil)
 	logN(t, c, 3)
 
@@ -230,7 +230,7 @@ func TestBufferDropsOnOther4xx(t *testing.T) {
 
 func TestBufferNeverResendsAcceptedRecords(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("", []int{202},
+	server.scriptLogs("", []int{202},
 		[]string{`{"accepted":2,"duplicates":0,"rejected":[{"index":0,"id":"x","code":"invalid_request","message":"started_at is more than 7 days in the past"}]}`})
 	c, _ := newLoggingClient(t, server, nil)
 	logN(t, c, 3)
@@ -358,26 +358,26 @@ func TestHashEndUserReplacesTheReference(t *testing.T) {
 	}
 }
 
-func TestWithGenerationLogsASuccess(t *testing.T) {
+func TestTrackLogsASuccess(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
-	res := mustResolve(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 
-	out, err := c.WithGeneration(testContext(t), res, CallMeta{
+	out, err := res.Track(testContext(t), CallMeta{
 		Variables: map[string]interface{}{"name": "Ada"},
-		Messages:  res.Messages,
+		Messages:  res.useCaseResolution.Messages,
 		TraceID:   "job:1",
-	}, func(ctx context.Context) (*Outcome, error) {
-		return &Outcome{
+	}, func(ctx context.Context) (*Result, error) {
+		return &Result{
 			Content:      "Hello, Ada!",
 			FinishReason: "stop",
 			Usage:        &Usage{InputTokens: IntPtr(38), OutputTokens: IntPtr(9), CostUSD: Float64Ptr(0.000112), CostSource: CostSourceProvider},
 		}, nil
 	})
 	if err != nil || out.Content != "Hello, Ada!" {
-		t.Fatalf("WithGeneration returned %v, %v", out, err)
+		t.Fatalf("Track returned %v, %v", out, err)
 	}
 	rec := c.Recorded()[0]
 	if rec["status"] != "ok" || rec["stop_kind"] != "stop" || rec["use_case"] != "greeting" {
@@ -391,15 +391,79 @@ func TestWithGenerationLogsASuccess(t *testing.T) {
 	}
 }
 
-func TestWithGenerationLogsAFailureAndPropagatesIt(t *testing.T) {
-	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+func TestResultAdaptersNormalizeProviderResponses(t *testing.T) {
+	openai := ResultFromOpenAI(map[string]interface{}{
+		"model": "gpt-4o-mini",
+		"choices": []interface{}{map[string]interface{}{
+			"finish_reason": "stop",
+			"message": map[string]interface{}{
+				"content":    "hi",
+				"tool_calls": []interface{}{map[string]interface{}{"id": "call_1"}},
+			},
+		}},
+		"usage": map[string]interface{}{"prompt_tokens": 3, "completion_tokens": 2},
+	})
+	if openai.Content != "hi" || openai.FinishReason != "stop" || openai.ModelUsed != "gpt-4o-mini" ||
+		openai.UpstreamProvider != "openai" || openai.Usage == nil ||
+		*openai.Usage.InputTokens != 3 || *openai.Usage.OutputTokens != 2 || len(openai.ToolCalls) != 1 {
+		t.Fatalf("openai result not normalized: %+v", openai)
 	}
-	res := mustResolve(t, c, "greeting")
+
+	anthropic := ResultFromAnthropic(map[string]interface{}{
+		"model":       "claude-sonnet-4",
+		"stop_reason": "end_turn",
+		"content": []interface{}{
+			map[string]interface{}{"type": "text", "text": "hello"},
+			map[string]interface{}{"type": "tool_use", "name": "noop"},
+		},
+		"usage": map[string]interface{}{"input_tokens": 5, "output_tokens": 4},
+	})
+	if anthropic.Content != "hello" || anthropic.FinishReason != "end_turn" ||
+		anthropic.ModelUsed != "claude-sonnet-4" || anthropic.UpstreamProvider != "anthropic" ||
+		anthropic.Usage == nil || *anthropic.Usage.InputTokens != 5 || *anthropic.Usage.OutputTokens != 4 {
+		t.Fatalf("anthropic result not normalized: %+v", anthropic)
+	}
+}
+
+func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
+	}
+	useCase := mustUseCase(t, c, "greeting")
+	messages, err := useCase.Messages(testContext(t), map[string]interface{}{"name": "Ada"}, WithPrompt("ko"))
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+
+	_, err = useCase.Track(testContext(t), CallMeta{Messages: messages}, func(ctx context.Context) (*Result, error) {
+		return &Result{Content: "안녕"}, nil
+	})
+	if err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	rec := c.Recorded()[0]
+	if rec["prompt"] != "ko" {
+		t.Fatalf("prompt evidence = %v, want ko in %v", rec["prompt"], rec)
+	}
+	if rec["prompt_version_id"] != "0198f2a1-0000-7000-8000-00000000a002" {
+		t.Fatalf("prompt_version_id = %v, want ko prompt version", rec["prompt_version_id"])
+	}
+	loggedMessages := rec["input"].(map[string]interface{})["messages"].([]interface{})
+	if got := loggedMessages[1].(map[string]interface{})["content"]; got != "Ada님에게 인사해줘." {
+		t.Fatalf("logged rendered message = %v", got)
+	}
+}
+
+func TestTrackLogsAFailureAndPropagatesIt(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
+	}
+	res := mustUseCase(t, c, "greeting")
 
 	sentinel := NewCallError(ErrorKindRateLimited, 429, "slow down")
-	_, err := c.WithGeneration(testContext(t), res, CallMeta{}, func(ctx context.Context) (*Outcome, error) {
+	_, err := res.Track(testContext(t), CallMeta{}, func(ctx context.Context) (*Result, error) {
 		return nil, sentinel
 	})
 	if !errors.Is(err, error(sentinel)) {
@@ -415,15 +479,15 @@ func TestWithGenerationLogsAFailureAndPropagatesIt(t *testing.T) {
 	}
 }
 
-func TestWithGenerationKeepsUsageOnAParseFailure(t *testing.T) {
+func TestTrackKeepsUsageOnAParseFailure(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
-	res := mustResolve(t, c, "greeting")
+	res := mustUseCase(t, c, "greeting")
 
-	_, err := c.WithGeneration(testContext(t), res, CallMeta{}, func(ctx context.Context) (*Outcome, error) {
-		outcome := &Outcome{
+	_, err := res.Track(testContext(t), CallMeta{}, func(ctx context.Context) (*Result, error) {
+		outcome := &Result{
 			Content:      `{"greeting": "Hello`,
 			FinishReason: "length",
 			Usage:        &Usage{InputTokens: IntPtr(38), OutputTokens: IntPtr(512), CostSource: CostSourceProvider},
@@ -446,12 +510,12 @@ func TestWithGenerationKeepsUsageOnAParseFailure(t *testing.T) {
 	}
 }
 
-func TestWithGenerationLogsAPanicAndRepanics(t *testing.T) {
+func TestTrackLogsAPanicAndRepanics(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetSnapshot([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetSnapshot: %v", err)
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
-	res := mustResolve(t, c, "greeting")
+	res := mustUseCase(t, c, "greeting")
 
 	func() {
 		defer func() {
@@ -459,7 +523,7 @@ func TestWithGenerationLogsAPanicAndRepanics(t *testing.T) {
 				t.Error("the panic must propagate")
 			}
 		}()
-		_, _ = c.WithGeneration(testContext(t), res, CallMeta{}, func(ctx context.Context) (*Outcome, error) {
+		_, _ = res.Track(testContext(t), CallMeta{}, func(ctx context.Context) (*Result, error) {
 			panic("provider client exploded")
 		})
 	}()
@@ -490,7 +554,7 @@ func TestOversizedRecordIsDroppedAtEnqueue(t *testing.T) {
 
 func TestBufferDropsABatchAfterTheAttemptBound(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("1", []int{503, 503, 503}, []string{"", "", ""})
+	server.scriptLogs("1", []int{503, 503, 503}, []string{"", "", ""})
 	c, clock := newLoggingClient(t, server, func(cfg *Config) { cfg.LogMaxAttempts = 3 })
 	logN(t, c, 2)
 
@@ -702,7 +766,7 @@ func TestBufferDropsTheOldestRecordsAcrossEnvironments(t *testing.T) {
 // back to the lane it came from.
 func TestFailuresAreCountedPerEnvironment(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptGenerations("", []int{500}, []string{""})
+	server.scriptLogs("", []int{500}, []string{""})
 	c, _ := newLoggingClient(t, server, nil)
 
 	if err := c.Log(sampleRecord(1)); err != nil {

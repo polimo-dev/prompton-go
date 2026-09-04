@@ -5,10 +5,10 @@ import (
 	"sort"
 )
 
-// SchemaVersion is the snapshot schema this SDK reads. A deployment revision is
+// SchemaVersion is the use-case document schema this SDK reads. A deployment revision is
 // a pin — one model plus one pinned prompt version per prompt name — not a
-// router: v3 has no rules, targets, weights or context dimensions.
-const SchemaVersion = 3
+// router: v4 has no rules, targets, weights or context dimensions.
+const SchemaVersion = 4
 
 // Kind is what a use case calls: a chat completion, a text completion, or an
 // embedding.
@@ -35,7 +35,7 @@ type InputVariable struct {
 	Required bool   `json:"required"`
 }
 
-// PayloadPolicy says what the SDK may send of a generation's input and output.
+// PayloadPolicy says what the SDK may send of a model call's input and output.
 type PayloadPolicy struct {
 	Mode          string  `json:"mode"`
 	SampleRate    float64 `json:"sample_rate"`
@@ -56,7 +56,7 @@ const (
 const DefaultMaxBytes = 262144
 
 // UseCase is one LLM call site.
-type UseCase struct {
+type DocumentUseCase struct {
 	ID            string                 `json:"id"`
 	Key           string                 `json:"-"`
 	Kind          Kind                   `json:"kind"`
@@ -99,13 +99,13 @@ type Model struct {
 	Status          string                 `json:"status"`
 }
 
-// Snapshot is a decoded GET /snapshot document: everything live in one
-// environment, resolved locally with no further network calls.
-type Snapshot struct {
+// UseCaseDocument is a decoded GET /use-cases document: everything live in one
+// environment, selected locally with no further network calls.
+type UseCaseDocument struct {
 	SchemaVersion  int
 	Project        string
 	Environment    string
-	UseCases       map[string]*UseCase
+	UseCases       map[string]*DocumentUseCase
 	Deployments    map[string]*Deployment
 	PromptVersions map[string]*PromptVersion
 	Models         map[string]*Model
@@ -119,57 +119,56 @@ type Snapshot struct {
 	Warnings []string
 }
 
-type rawSnapshot struct {
-	SchemaVersion  *int                      `json:"schema_version"`
-	Project        string                    `json:"project"`
-	Environment    string                    `json:"environment"`
-	UseCases       map[string]*UseCase       `json:"use_cases"`
-	Deployments    map[string]*Deployment    `json:"deployments"`
-	PromptVersions map[string]*PromptVersion `json:"prompt_versions"`
-	Models         map[string]*Model         `json:"models"`
+type rawUseCaseDocument struct {
+	SchemaVersion  *int                        `json:"schema_version"`
+	Project        string                      `json:"project"`
+	Environment    string                      `json:"environment"`
+	UseCases       map[string]*DocumentUseCase `json:"use_cases"`
+	Deployments    map[string]*Deployment      `json:"deployments"`
+	PromptVersions map[string]*PromptVersion   `json:"prompt_versions"`
+	Models         map[string]*Model           `json:"models"`
 }
 
-// UnsupportedSchemaError is returned for a v1 or v2 snapshot: those documents
-// describe routers, and this SDK only understands pins.
+// UnsupportedSchemaError is returned for any document whose schema_version is
+// not exactly the integer this SDK reads.
 type UnsupportedSchemaError struct {
 	Version int
+	Missing bool
 }
 
 func (e *UnsupportedSchemaError) Error() string {
-	return fmt.Sprintf("prompton: unsupported snapshot schema_version %d (this SDK reads v%d)", e.Version, SchemaVersion)
+	if e.Missing {
+		return fmt.Sprintf("prompton: missing use-case document schema_version (this SDK reads v%d)", SchemaVersion)
+	}
+	return fmt.Sprintf("prompton: unsupported use-case document schema_version %d (this SDK reads v%d)", e.Version, SchemaVersion)
 }
 
-// ParseSnapshot decodes a GET /snapshot body.
-func ParseSnapshot(data []byte) (*Snapshot, error) {
-	var raw rawSnapshot
+// ParseUseCaseDocument decodes a GET /use-cases body.
+func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
+	var raw rawUseCaseDocument
 	if err := decodeJSON(data, &raw); err != nil {
-		return nil, fmt.Errorf("prompton: invalid snapshot JSON: %w", err)
+		return nil, fmt.Errorf("prompton: invalid use-case document JSON: %w", err)
 	}
-	version := SchemaVersion
-	var warnings []string
-	if raw.SchemaVersion != nil {
-		version = *raw.SchemaVersion
+	if raw.SchemaVersion == nil {
+		return nil, &UnsupportedSchemaError{Missing: true}
 	}
-	if version < SchemaVersion {
+	version := *raw.SchemaVersion
+	if version != SchemaVersion {
 		return nil, &UnsupportedSchemaError{Version: version}
 	}
-	if version > SchemaVersion {
-		warnings = append(warnings, fmt.Sprintf("unknown schema_version %d: decoding the fields this SDK knows", version))
-	}
 	if raw.UseCases == nil {
-		return nil, fmt.Errorf("prompton: snapshot has no use_cases object")
+		return nil, fmt.Errorf("prompton: use-case document has no use_cases object")
 	}
 
-	snap := &Snapshot{
+	snap := &UseCaseDocument{
 		SchemaVersion:  version,
 		Project:        raw.Project,
 		Environment:    raw.Environment,
-		UseCases:       map[string]*UseCase{},
+		UseCases:       map[string]*DocumentUseCase{},
 		Deployments:    map[string]*Deployment{},
 		PromptVersions: map[string]*PromptVersion{},
 		Models:         map[string]*Model{},
 		Raw:            append([]byte(nil), data...),
-		Warnings:       warnings,
 	}
 	for key, uc := range raw.UseCases {
 		if uc == nil {
@@ -222,7 +221,7 @@ func ParseSnapshot(data []byte) (*Snapshot, error) {
 }
 
 // PromptNames lists the prompt names the live revision of a use case pins.
-func (s *Snapshot) PromptNames(useCase string) []string {
+func (s *UseCaseDocument) PromptNames(useCase string) []string {
 	dep := s.Deployments[useCase]
 	if dep == nil {
 		return []string{}

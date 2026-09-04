@@ -11,7 +11,7 @@ import (
 	"unicode/utf8"
 )
 
-// The payload policy decides how much of a generation's input and output ever
+// The payload policy decides how much of a model call's input and output ever
 // leaves the process. The server re-checks the same rules, but the SDK applies
 // them first so the raw text never travels: if the SDK is more conservative,
 // the SDK wins.

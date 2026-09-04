@@ -435,7 +435,7 @@ func (b *logBuffer) send(ctx context.Context, env string, batch logBatch) {
 		records[i] = r.record
 	}
 	sendCtx, cancel := context.WithTimeout(ctx, b.client.cfg.Timeout+time.Second)
-	result, err := b.client.postGenerations(sendCtx, env, records)
+	result, err := b.client.postLogs(sendCtx, env, records)
 	cancel()
 
 	if err == nil {

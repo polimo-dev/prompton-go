@@ -49,14 +49,14 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	return req, nil
 }
 
-// fetchSnapshot performs GET /snapshot with If-None-Match. A 304 carries no
+// fetchSnapshot performs GET /use-cases with If-None-Match. A 304 carries no
 // body and nothing to parse.
 func (c *Client) fetchSnapshot(ctx context.Context, environment, etag string) (*snapshotResponse, error) {
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	query := url.Values{"environment": []string{environment}}
-	req, err := c.newRequest(ctx, http.MethodGet, "/snapshot", query, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/use-cases", query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +105,7 @@ type resolveRequest struct {
 }
 
 func (r resolveRequest) body() map[string]interface{} {
-	out := map[string]interface{}{"use_case": r.UseCase}
+	out := map[string]interface{}{}
 	if r.Environment != "" {
 		out["environment"] = r.Environment
 	}
@@ -119,25 +119,26 @@ func (r resolveRequest) body() map[string]interface{} {
 }
 
 type resolveResponse struct {
-	UseCase    string `json:"use_case"`
+	Key        string `json:"key"`
 	Kind       string `json:"kind"`
 	Deployment struct {
 		ID       string `json:"id"`
 		Revision int    `json:"revision"`
 	} `json:"deployment"`
-	Prompt                   *string                `json:"prompt"`
-	Prompts                  []string               `json:"prompts"`
-	ModelID                  *string                `json:"model_id"`
-	Model                    *string                `json:"model"`
-	Provider                 *string                `json:"provider"`
-	EffectiveParams          map[string]interface{} `json:"effective_params"`
-	EffectiveProviderOptions map[string]interface{} `json:"effective_provider_options"`
-	PromptVersion            *struct {
+	Prompt          *string                `json:"prompt"`
+	PromptNames     []string               `json:"prompt_names"`
+	ModelID         *string                `json:"model_id"`
+	Model           *string                `json:"model"`
+	Provider        *string                `json:"provider"`
+	Params          map[string]interface{} `json:"params"`
+	ProviderOptions map[string]interface{} `json:"provider_options"`
+	PromptVersion   *struct {
 		ID     string `json:"id"`
 		Number int    `json:"number"`
 	} `json:"prompt_version"`
 	Messages []Message `json:"messages"`
 	Text     *string   `json:"text"`
+	Source   string    `json:"source"`
 	Warnings []string  `json:"warnings"`
 	ETag     string    `json:"etag"`
 }
@@ -147,7 +148,8 @@ func (c *Client) postResolve(ctx context.Context, body resolveRequest) (*resolve
 		return nil, ErrNoAPIKey
 	}
 	payload := canonicalJSON(body.body())
-	req, err := c.newRequest(ctx, http.MethodPost, "/resolve", nil, payload)
+	path := "/use-cases/" + url.PathEscape(body.UseCase) + "/prompt"
+	req, err := c.newRequest(ctx, http.MethodPost, path, nil, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -165,12 +167,12 @@ func (c *Client) postResolve(ctx context.Context, body resolveRequest) (*resolve
 	}
 	var out resolveResponse
 	if err := decodeJSON(data, &out); err != nil {
-		return nil, fmt.Errorf("prompton: invalid /resolve response: %w", err)
+		return nil, fmt.Errorf("prompton: invalid prompt response: %w", err)
 	}
 	return &out, nil
 }
 
-// BatchResult is what POST /generations answers with. One bad record never
+// BatchResult is what POST /logs answers with. One bad record never
 // fails the batch: read Rejected, and never resend the accepted ones.
 type BatchResult struct {
 	Accepted   int             `json:"accepted"`
@@ -186,13 +188,13 @@ type RejectedEntry struct {
 	Message string `json:"message"`
 }
 
-func (c *Client) postGenerations(ctx context.Context, environment string, records []map[string]interface{}) (*BatchResult, error) {
+func (c *Client) postLogs(ctx context.Context, environment string, records []map[string]interface{}) (*BatchResult, error) {
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	payload := encodeBatch(records)
 	query := url.Values{"environment": []string{environment}}
-	req, err := c.newRequest(ctx, http.MethodPost, "/generations", query, payload)
+	req, err := c.newRequest(ctx, http.MethodPost, "/logs", query, payload)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +218,7 @@ func (c *Client) postGenerations(ctx context.Context, environment string, record
 	}
 	var out BatchResult
 	if err := decodeJSON(data, &out); err != nil {
-		return nil, fmt.Errorf("prompton: invalid /generations response: %w", err)
+		return nil, fmt.Errorf("prompton: invalid /logs response: %w", err)
 	}
 	return &out, nil
 }
@@ -227,7 +229,7 @@ func encodeBatch(records []map[string]interface{}) []byte {
 	for i, r := range records {
 		list[i] = r
 	}
-	return canonicalJSON(map[string]interface{}{"generations": list})
+	return canonicalJSON(map[string]interface{}{"logs": list})
 }
 
 func drainAndClose(resp *http.Response) {
