@@ -4,6 +4,15 @@ All notable changes to this SDK are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.4.0
+
+Schema-v7 prompt/tool contract support.
+
+- Reads deployed documents with `schema_version` 4 through 7, including the `prompts`/`template_pins` aliases used by the prompt contract fixture.
+- Preserves provider-native chat messages, including message slots, `null` and array content, `tool_calls`, `tool_call_id`, and unknown native fields.
+- Merges canonical prompt `tools` into provider params, strips PromptOn-only `output_schema` and `output_examples`, and rejects conflicting legacy params.
+- Adds `Client.LogEvents` for synchronous trace event submission to `/logs?environment=...` with stable generated `event_id`, `observed_at`, and `sdk`.
+
 ## 0.2.0
 
 Breaking vocabulary cleanup for the schema-v4 use-case document contract.

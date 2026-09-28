@@ -2,6 +2,8 @@ package prompton
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 )
 
@@ -158,6 +160,91 @@ func (c *Client) Log(rec LogRecord) error {
 		return nil
 	}
 	return c.buffer.enqueue(environment, payload)
+}
+
+// TraceEvent is one monitored step inside a trace: a tool attempt or a final completion.
+// The SDK never calls customer tools; it only submits the events your app observed.
+type TraceEvent map[string]interface{}
+
+const (
+	EventKindToolAttempt = "tool_attempt"
+	EventKindCompletion  = "completion"
+
+	EventStatusStarted    = "started"
+	EventStatusOK         = "ok"
+	EventStatusError      = "error"
+	EventStatusDenied     = "denied"
+	EventStatusCancelled  = "cancelled"
+	EventStatusTimeout    = "timeout"
+	EventStatusMissing    = "missing"
+	EventStatusIncomplete = "incomplete"
+)
+
+var eventKinds = map[string]bool{
+	EventKindToolAttempt: true,
+	EventKindCompletion:  true,
+}
+
+var eventStatuses = map[string]bool{
+	EventStatusStarted:    true,
+	EventStatusOK:         true,
+	EventStatusError:      true,
+	EventStatusDenied:     true,
+	EventStatusCancelled:  true,
+	EventStatusTimeout:    true,
+	EventStatusMissing:    true,
+	EventStatusIncomplete: true,
+}
+
+// LogEvents submits observed tool/completion trace events synchronously. It fills event_id,
+// observed_at and sdk when absent, preserving generated IDs on the supplied maps so a
+// caller retrying the same slice sends the same event ids.
+func (c *Client) LogEvents(ctx context.Context, events []TraceEvent, environment ...string) (*BatchResult, error) {
+	if len(events) == 0 {
+		return &BatchResult{}, nil
+	}
+	if len(events) > 500 {
+		return nil, errors.New("prompton: LogEvents accepts at most 500 events")
+	}
+	env := c.cfg.Environment
+	if len(environment) > 0 && environment[0] != "" {
+		env = environment[0]
+	}
+	prepared := make([]map[string]interface{}, len(events))
+	for i := range events {
+		if events[i] == nil {
+			return nil, fmt.Errorf("prompton: trace event %d must be an object", i)
+		}
+		prepared[i] = events[i]
+		if _, ok := events[i]["event_id"].(string); !ok || events[i]["event_id"] == "" {
+			events[i]["event_id"] = NewLogID()
+		}
+		if _, ok := events[i]["observed_at"].(string); !ok || events[i]["observed_at"] == "" {
+			events[i]["observed_at"] = c.cfg.now().UTC().Format("2006-01-02T15:04:05.000000Z")
+		}
+		if traceID, ok := events[i]["trace_id"].(string); !ok || traceID == "" {
+			return nil, fmt.Errorf("prompton: trace event %d needs trace_id", i)
+		}
+		kind, ok := events[i]["event_kind"].(string)
+		if !ok || !eventKinds[kind] {
+			return nil, fmt.Errorf("prompton: trace event %d has unsupported event_kind", i)
+		}
+		status, ok := events[i]["status"].(string)
+		if !ok || !eventStatuses[status] {
+			return nil, fmt.Errorf("prompton: trace event %d has unsupported status", i)
+		}
+		ensureEventSDK(events[i])
+	}
+	if c.cfg.APIKey == "" {
+		return nil, ErrNoAPIKey
+	}
+	return c.postEvents(ctx, env, prepared)
+}
+
+func ensureEventSDK(event map[string]interface{}) {
+	if _, ok := event["sdk"]; !ok {
+		event["sdk"] = map[string]interface{}{"name": SDKName, "version": Version}
+	}
 }
 
 // policyFor is the use case's payload policy: the one carried by the use-case

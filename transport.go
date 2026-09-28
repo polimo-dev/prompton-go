@@ -131,6 +131,7 @@ type resolveResponse struct {
 	Model           *string                `json:"model"`
 	Provider        *string                `json:"provider"`
 	Params          map[string]interface{} `json:"params"`
+	Tools           map[string]interface{} `json:"tools"`
 	ProviderOptions map[string]interface{} `json:"provider_options"`
 	PromptVersion   *struct {
 		ID     string `json:"id"`
@@ -225,11 +226,42 @@ func (c *Client) postLogs(ctx context.Context, environment string, records []map
 
 // encodeBatch wraps records in the request envelope the endpoint accepts.
 func encodeBatch(records []map[string]interface{}) []byte {
-	list := make([]interface{}, len(records))
-	for i, r := range records {
-		list[i] = r
+	return canonicalJSON(map[string]interface{}{"logs": records})
+}
+
+func (c *Client) postEvents(ctx context.Context, environment string, events []map[string]interface{}) (*BatchResult, error) {
+	if c.cfg.APIKey == "" {
+		return nil, ErrNoAPIKey
 	}
-	return canonicalJSON(map[string]interface{}{"logs": list})
+	payload := canonicalJSON(map[string]interface{}{"logs": []interface{}{}, "events": events})
+	query := url.Values{"environment": []string{environment}}
+	req, err := c.newRequest(ctx, http.MethodPost, "/logs", query, payload)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := c.cfg.HTTPClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer drainAndClose(resp)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes))
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		apiErr := parseAPIError(resp.StatusCode, data)
+		if apiErr.RetryAfter == 0 {
+			if d := parseRetryAfter(resp.Header.Get("Retry-After"), c.cfg.now()); d > 0 {
+				apiErr.RetryAfter = d.Seconds()
+			}
+		}
+		return nil, apiErr
+	}
+	var out BatchResult
+	if err := decodeJSON(data, &out); err != nil {
+		return nil, fmt.Errorf("prompton: invalid /logs response: %w", err)
+	}
+	return &out, nil
 }
 
 func drainAndClose(resp *http.Response) {

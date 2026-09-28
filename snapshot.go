@@ -1,14 +1,15 @@
 package prompton
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 )
 
-// SchemaVersion is the use-case document schema this SDK reads. A deployment revision is
+// SchemaVersion is the newest use-case document schema this SDK reads. A deployment revision is
 // a pin — one model plus one pinned prompt version per prompt name — not a
-// router: v4 has no rules, targets, weights or context dimensions.
-const SchemaVersion = 4
+// router: schema 7 adds provider-visible chat tools and full native messages.
+const SchemaVersion = 7
 
 // Kind is what a use case calls: a chat completion, a text completion, or an
 // embedding.
@@ -23,9 +24,99 @@ const (
 
 // Message is one chat message of a prompt version, before or after rendering.
 type Message struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-	Name    string `json:"name,omitempty"`
+	Role       string                   `json:"role,omitempty"`
+	Type       string                   `json:"type,omitempty"`
+	Content    string                   `json:"content,omitempty"`
+	Name       string                   `json:"name,omitempty"`
+	ToolCallID string                   `json:"tool_call_id,omitempty"`
+	ToolCalls  []map[string]interface{} `json:"tool_calls,omitempty"`
+	Extra      map[string]interface{}   `json:"-"`
+
+	rawContent interface{}
+	hasContent bool
+}
+
+// ContentValue returns the exact decoded JSON content. For messages created through the public
+// constructor shape it returns Content.
+func (m Message) ContentValue() interface{} {
+	if m.hasContent {
+		return m.rawContent
+	}
+	return m.Content
+}
+
+func (m *Message) UnmarshalJSON(data []byte) error {
+	var raw map[string]interface{}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	if v, ok := raw["role"].(string); ok {
+		m.Role = v
+	}
+	if v, ok := raw["type"].(string); ok {
+		m.Type = v
+	}
+	if v, ok := raw["name"].(string); ok {
+		m.Name = v
+	}
+	if v, ok := raw["tool_call_id"].(string); ok {
+		m.ToolCallID = v
+	}
+	if calls, ok := raw["tool_calls"].([]interface{}); ok {
+		m.ToolCalls = make([]map[string]interface{}, 0, len(calls))
+		for _, call := range calls {
+			if callMap, ok := call.(map[string]interface{}); ok {
+				m.ToolCalls = append(m.ToolCalls, callMap)
+			}
+		}
+	}
+	if content, ok := raw["content"]; ok {
+		m.hasContent = true
+		m.rawContent = content
+		if s, ok := content.(string); ok {
+			m.Content = s
+		}
+	}
+	m.Extra = map[string]interface{}{}
+	for key, value := range raw {
+		switch key {
+		case "role", "type", "content", "name", "tool_call_id", "tool_calls":
+		default:
+			m.Extra[key] = value
+		}
+	}
+	if len(m.Extra) == 0 {
+		m.Extra = nil
+	}
+	return nil
+}
+
+func (m Message) MarshalJSON() ([]byte, error) {
+	out := map[string]interface{}{}
+	for key, value := range m.Extra {
+		out[key] = value
+	}
+	if m.Type != "" {
+		out["type"] = m.Type
+	}
+	if m.Role != "" {
+		out["role"] = m.Role
+	}
+	if m.hasContent {
+		out["content"] = m.rawContent
+	} else if m.Content != "" || m.Type != "slot" {
+		out["content"] = m.Content
+	}
+	if m.Name != "" {
+		out["name"] = m.Name
+	}
+	if m.ToolCallID != "" {
+		out["tool_call_id"] = m.ToolCallID
+	}
+	if len(m.ToolCalls) > 0 {
+		out["tool_calls"] = m.ToolCalls
+	}
+	return json.Marshal(out)
 }
 
 // InputVariable is one entry of a use case's declared input schema.
@@ -74,16 +165,18 @@ type Deployment struct {
 	Params          map[string]interface{} `json:"params"`
 	ProviderOptions map[string]interface{} `json:"provider_options"`
 	PromptPins      map[string]string      `json:"prompt_pins"`
+	TemplatePins    map[string]string      `json:"template_pins"`
 }
 
 // PromptVersion is an immutable prompt template.
 type PromptVersion struct {
-	ID           string    `json:"id"`
-	PromptID     string    `json:"prompt_id"`
-	Number       int       `json:"number"`
-	Engine       string    `json:"engine"`
-	Messages     []Message `json:"messages"`
-	TextTemplate string    `json:"text_template"`
+	ID           string                 `json:"id"`
+	PromptID     string                 `json:"prompt_id"`
+	Number       int                    `json:"number"`
+	Engine       string                 `json:"engine"`
+	Messages     []Message              `json:"messages"`
+	Tools        map[string]interface{} `json:"tools,omitempty"`
+	TextTemplate string                 `json:"text_template"`
 }
 
 // Model is a catalog entry: the provider and the provider-side model string the
@@ -124,6 +217,7 @@ type rawUseCaseDocument struct {
 	Project        string                      `json:"project"`
 	Environment    string                      `json:"environment"`
 	UseCases       map[string]*DocumentUseCase `json:"use_cases"`
+	Prompts        map[string]*DocumentUseCase `json:"prompts"`
 	Deployments    map[string]*Deployment      `json:"deployments"`
 	PromptVersions map[string]*PromptVersion   `json:"prompt_versions"`
 	Models         map[string]*Model           `json:"models"`
@@ -153,8 +247,11 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		return nil, &UnsupportedSchemaError{Missing: true}
 	}
 	version := *raw.SchemaVersion
-	if version != SchemaVersion {
+	if version < 4 || version > SchemaVersion {
 		return nil, &UnsupportedSchemaError{Version: version}
+	}
+	if raw.UseCases == nil {
+		raw.UseCases = raw.Prompts
 	}
 	if raw.UseCases == nil {
 		return nil, fmt.Errorf("prompton: use-case document has no use_cases object")
@@ -190,6 +287,9 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		}
 		if dep.ProviderOptions == nil {
 			dep.ProviderOptions = map[string]interface{}{}
+		}
+		if dep.PromptPins == nil {
+			dep.PromptPins = dep.TemplatePins
 		}
 		if dep.PromptPins == nil {
 			dep.PromptPins = map[string]string{}

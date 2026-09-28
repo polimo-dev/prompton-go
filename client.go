@@ -529,6 +529,7 @@ func resolutionFromResponse(useCase string, r *resolveResponse) *useCaseResoluti
 		DeploymentRevision: r.Deployment.Revision,
 		PromptNames:        r.PromptNames,
 		Params:             r.Params,
+		Tools:              r.Tools,
 		ProviderOptions:    r.ProviderOptions,
 		Messages:           append([]Message(nil), r.Messages...),
 		Source:             SourceRemote,
@@ -552,6 +553,11 @@ func resolutionFromResponse(useCase string, r *resolveResponse) *useCaseResoluti
 	}
 	if r.Provider != nil {
 		res.Provider = *r.Provider
+	}
+	var err error
+	res.Params, err = mergeToolParams(res.Params, res.Tools)
+	if err != nil {
+		res.Warnings = append(res.Warnings, err.Error())
 	}
 	if r.PromptVersion != nil {
 		res.PromptVersionID = r.PromptVersion.ID

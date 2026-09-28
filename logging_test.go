@@ -816,3 +816,67 @@ func assertLaneBytes(t *testing.T, b *logBuffer) {
 		}
 	}
 }
+
+func TestLogEventsPostsEventsEnvelopeAndFillsStableFields(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	server.scriptLogs("", []int{202, 202}, []string{`{"accepted":1,"duplicates":0,"rejected":[]}`, `{"accepted":1,"duplicates":0,"rejected":[]}`})
+	c, _ := newLoggingClient(t, server, nil)
+	events := []TraceEvent{{
+		"trace_id":     "trace-1",
+		"event_kind":   EventKindToolAttempt,
+		"status":       EventStatusOK,
+		"tool_call_id": "call_1",
+		"tool_name":    "search",
+		"arguments":    map[string]interface{}{"q": "diary"},
+		"result":       []interface{}{map[string]interface{}{"text": "found"}},
+	}}
+	ack, err := c.LogEvents(testContext(t), events)
+	if err != nil {
+		t.Fatalf("LogEvents: %v", err)
+	}
+	if ack.Accepted != 1 {
+		t.Fatalf("accepted %d, want 1", ack.Accepted)
+	}
+	firstID := events[0]["event_id"]
+	if firstID == "" || events[0]["observed_at"] == "" {
+		t.Fatalf("event fields not filled: %#v", events[0])
+	}
+	sdk := events[0]["sdk"].(map[string]interface{})
+	if sdk["version"] != Version {
+		t.Fatalf("sdk %#v", sdk)
+	}
+	if _, err := c.LogEvents(testContext(t), events); err != nil {
+		t.Fatalf("retry LogEvents: %v", err)
+	}
+	if events[0]["event_id"] != firstID {
+		t.Fatalf("event id changed on retry: %v -> %v", firstID, events[0]["event_id"])
+	}
+	raw := server.rawBatches()
+	if len(raw) != 2 {
+		t.Fatalf("raw event requests %d, want 2", len(raw))
+	}
+	var envelope map[string]interface{}
+	if err := decodeJSON(raw[0], &envelope); err != nil {
+		t.Fatalf("decode event envelope: %v", err)
+	}
+	if len(envelope["events"].([]interface{})) != 1 || len(envelope["logs"].([]interface{})) != 0 {
+		t.Fatalf("event envelope mismatch: %#v", envelope)
+	}
+}
+
+func TestLogEventsValidatesRequiredFields(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest})
+	if _, err := c.LogEvents(testContext(t), []TraceEvent{{"event_kind": EventKindCompletion, "status": EventStatusOK}}); err == nil {
+		t.Fatal("missing trace_id should fail")
+	}
+	if _, err := c.LogEvents(testContext(t), []TraceEvent{{"trace_id": "t", "event_kind": "weird", "status": EventStatusOK}}); err == nil {
+		t.Fatal("bad event_kind should fail")
+	}
+	many := make([]TraceEvent, 501)
+	for i := range many {
+		many[i] = TraceEvent{"trace_id": "t", "event_kind": EventKindCompletion, "status": EventStatusOK}
+	}
+	if _, err := c.LogEvents(testContext(t), many); err == nil {
+		t.Fatal("too many events should fail")
+	}
+}

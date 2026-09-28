@@ -408,9 +408,27 @@ func (o *Output) toMap() map[string]interface{} {
 func messagesToList(messages []Message) []interface{} {
 	out := make([]interface{}, len(messages))
 	for i, m := range messages {
-		entry := map[string]interface{}{"role": m.Role, "content": m.Content}
+		entry := map[string]interface{}{}
+		for key, value := range m.Extra {
+			entry[key] = value
+		}
+		if m.Type != "" {
+			entry["type"] = m.Type
+		}
+		if m.Role != "" {
+			entry["role"] = m.Role
+		}
+		if m.hasContent || m.Content != "" || m.Type != "slot" {
+			entry["content"] = m.ContentValue()
+		}
 		if m.Name != "" {
 			entry["name"] = m.Name
+		}
+		if m.ToolCallID != "" {
+			entry["tool_call_id"] = m.ToolCallID
+		}
+		if len(m.ToolCalls) > 0 {
+			entry["tool_calls"] = m.ToolCalls
 		}
 		out[i] = entry
 	}

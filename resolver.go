@@ -1,6 +1,10 @@
 package prompton
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
+
 	"github.com/polimo-dev/prompton-go/internal/liquid"
 )
 
@@ -49,6 +53,7 @@ type useCaseResolution struct {
 	// deployment.provider_options. Both are shallow merges, right side wins.
 	Params          map[string]interface{}
 	ProviderOptions map[string]interface{}
+	Tools           map[string]interface{}
 
 	PromptVersionID     string
 	PromptVersionNumber int
@@ -209,6 +214,7 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 		res.PromptVersionID = version.ID
 		res.PromptVersionNumber = version.Number
 		res.Engine = version.Engine
+		res.Tools = cloneMap(version.Tools)
 		switch uc.Kind {
 		case KindChat:
 			res.Messages = append([]Message(nil), version.Messages...)
@@ -223,6 +229,11 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 		res.ProviderOptions = mergeParams(model.ProviderOptions, dep.ProviderOptions)
 	} else {
 		res.ProviderOptions = mergeParams(nil, dep.ProviderOptions)
+	}
+	var err error
+	res.Params, err = mergeToolParams(res.Params, res.Tools)
+	if err != nil {
+		return nil, err
 	}
 
 	if o.Variables != nil {
@@ -239,10 +250,103 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 func (r *useCaseResolution) Render(vars map[string]interface{}) (*useCaseResolution, error) {
 	clone := *r
 	clone.Messages = append([]Message(nil), r.Messages...)
+	clone.Tools = cloneMap(r.Tools)
 	if err := renderInto(&clone, vars); err != nil {
 		return nil, err
 	}
 	return &clone, nil
+}
+
+func mergeToolParams(params map[string]interface{}, tools map[string]interface{}) (map[string]interface{}, error) {
+	out := mergeParams(nil, params)
+	provider, err := providerToolParams(tools)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range provider {
+		if existing, ok := out[key]; ok && string(canonicalJSON(existing)) != string(canonicalJSON(value)) {
+			return nil, fmt.Errorf("prompton: prompt tools conflict with params.%s", key)
+		}
+		out[key] = value
+	}
+	return out, nil
+}
+
+func providerToolParams(tools map[string]interface{}) (map[string]interface{}, error) {
+	if len(tools) == 0 {
+		return nil, nil
+	}
+	for key := range tools {
+		switch key {
+		case "definitions", "tool_choice", "parallel_tool_calls":
+		default:
+			return nil, fmt.Errorf("prompton: canonical tools contain unsupported field %q", key)
+		}
+	}
+	definitions, ok := tools["definitions"].([]interface{})
+	if !ok {
+		return nil, errors.New("prompton: canonical tools definitions must be an array")
+	}
+	out := map[string]interface{}{}
+	stripped := make([]interface{}, 0, len(definitions))
+	for _, def := range definitions {
+		clean, err := stripToolMetadata(def)
+		if err != nil {
+			return nil, err
+		}
+		stripped = append(stripped, clean)
+	}
+	out["tools"] = stripped
+	for _, key := range []string{"tool_choice", "parallel_tool_calls"} {
+		if value, ok := tools[key]; ok && value != nil {
+			if key == "parallel_tool_calls" {
+				if _, ok := value.(bool); !ok {
+					return nil, errors.New("prompton: canonical tools parallel_tool_calls must be a boolean")
+				}
+			}
+			out[key] = value
+		}
+	}
+	return out, nil
+}
+
+func stripToolMetadata(value interface{}) (interface{}, error) {
+	m, ok := value.(map[string]interface{})
+	if !ok {
+		return nil, errors.New("prompton: canonical tool definitions must be objects")
+	}
+	if m["type"] != "function" {
+		return nil, errors.New("prompton: canonical tool definitions must be function tools")
+	}
+	fn, ok := m["function"].(map[string]interface{})
+	if !ok {
+		return nil, errors.New("prompton: canonical function tools require a function object")
+	}
+	if name, ok := fn["name"].(string); !ok || name == "" {
+		return nil, errors.New("prompton: canonical function tools require function.name")
+	}
+	if _, ok := fn["parameters"]; !ok {
+		return nil, errors.New("prompton: canonical function tools require function.parameters")
+	}
+	out := map[string]interface{}{}
+	for key, v := range m {
+		if key == "output_schema" || key == "output_examples" {
+			continue
+		}
+		out[key] = v
+	}
+	return out, nil
+}
+
+func cloneMap(in map[string]interface{}) map[string]interface{} {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]interface{}, len(in))
+	for key, value := range in {
+		out[key] = value
+	}
+	return out
 }
 
 // RenderMessages renders a chat resolution and returns just the messages.
@@ -279,14 +383,35 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 		if res.Messages == nil {
 			return nil
 		}
-		out := make([]Message, len(res.Messages))
-		for i, m := range res.Messages {
-			content, err := liquid.Render(m.Content, vars, engine)
-			if err != nil {
-				return templateError(err)
+		out := make([]Message, 0, len(res.Messages))
+		for _, m := range res.Messages {
+			if m.Type == "slot" {
+				value, ok := vars[m.Name]
+				if !ok {
+					return &MissingVariableError{Variable: m.Name}
+				}
+				spliced, err := messagesFromVariable(value)
+				if err != nil {
+					return err
+				}
+				out = append(out, spliced...)
+				continue
 			}
-			m.Content = content
-			out[i] = m
+			if !m.hasContent || m.rawContent == nil {
+				content, err := liquid.Render(m.Content, vars, engine)
+				if err != nil {
+					return templateError(err)
+				}
+				m.Content = content
+			} else if content, ok := m.rawContent.(string); ok {
+				rendered, err := liquid.Render(content, vars, engine)
+				if err != nil {
+					return templateError(err)
+				}
+				m.Content = rendered
+				m.rawContent = rendered
+			}
+			out = append(out, m)
 		}
 		res.Messages = out
 		res.Rendered = true
@@ -302,6 +427,24 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 		res.Rendered = true
 	}
 	return nil
+}
+
+func messagesFromVariable(value interface{}) ([]Message, error) {
+	if value == nil {
+		return nil, fmt.Errorf("prompton: message slot must be an array of provider messages")
+	}
+	if messages, ok := value.([]Message); ok {
+		return append([]Message(nil), messages...), nil
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("prompton: message slot must be an array of provider messages")
+	}
+	var messages []Message
+	if err := decodeJSON(raw, &messages); err != nil {
+		return nil, fmt.Errorf("prompton: message slot must be an array of provider messages")
+	}
+	return messages, nil
 }
 
 func templateError(err *liquid.Error) error {

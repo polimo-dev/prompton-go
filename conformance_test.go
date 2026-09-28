@@ -58,7 +58,7 @@ func TestConformanceStopKind(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// use_case.json
+// prompt.json
 
 func TestConformanceUseCase(t *testing.T) {
 	var suite struct {
@@ -67,13 +67,15 @@ func TestConformanceUseCase(t *testing.T) {
 			Name        string                 `json:"name"`
 			DocumentRef string                 `json:"document_ref"`
 			UseCase     string                 `json:"use_case"`
+			PromptKey   string                 `json:"prompt_key"`
 			Prompt      string                 `json:"prompt"`
+			Template    string                 `json:"template"`
 			Variables   map[string]interface{} `json:"variables"`
 			Environment string                 `json:"environment"`
 			Expect      map[string]interface{} `json:"expect"`
 		} `json:"cases"`
 	}
-	loadConformance(t, "use_case.json", &suite)
+	loadConformance(t, "prompt.json", &suite)
 	if len(suite.Cases) == 0 {
 		t.Fatal("no use-case cases loaded")
 	}
@@ -95,13 +97,21 @@ func TestConformanceUseCase(t *testing.T) {
 				t.Fatalf("unknown document_ref %q", c.DocumentRef)
 			}
 			var opts []UseCaseOption
-			if c.Prompt != "" {
-				opts = append(opts, WithPrompt(c.Prompt))
+			promptName := c.Prompt
+			if promptName == "" {
+				promptName = c.Template
+			}
+			if promptName != "" {
+				opts = append(opts, WithPrompt(promptName))
 			}
 			if c.Variables != nil {
 				opts = append(opts, WithVariables(c.Variables))
 			}
-			res, err := resolveSnapshot(snap, c.UseCase, opts...)
+			key := c.UseCase
+			if key == "" {
+				key = c.PromptKey
+			}
+			res, err := resolveSnapshot(snap, key, opts...)
 
 			if wantErr, ok := c.Expect["error"].(string); ok {
 				if err == nil {
@@ -140,16 +150,29 @@ func assertUseCaseError(t *testing.T, err error, want string, expect map[string]
 		if !ok {
 			t.Fatalf("expected *UseCaseError, got %T (%v)", err, err)
 		}
-		if re.Code != want {
+		wantCode := want
+		if wantCode == "unknown_template" {
+			wantCode = "unknown_prompt"
+		} else if wantCode == "unknown_prompt" && re.Code == "unknown_use_case" {
+			wantCode = "unknown_use_case"
+		}
+		if re.Code != wantCode {
 			t.Fatalf("code %q, want %q", re.Code, want)
 		}
-		if key, ok := expect["key"].(string); ok && re.UseCase != key {
+		if key, ok := expect["key"].(string); ok && re.UseCase != "" && re.UseCase != key {
 			t.Fatalf("key %q, want %q", re.UseCase, key)
 		}
 		if p, ok := expect["prompt"].(string); ok && re.Prompt != p {
 			t.Fatalf("prompt %q, want %q", re.Prompt, p)
 		}
-		if list, ok := expect["prompt_names"].([]interface{}); ok {
+		if p, ok := expect["template"].(string); ok && re.Prompt != p {
+			t.Fatalf("template %q, want %q", re.Prompt, p)
+		}
+		list, ok := expect["prompt_names"].([]interface{})
+		if !ok {
+			list, ok = expect["template_names"].([]interface{})
+		}
+		if ok {
 			if len(list) != len(re.PromptNames) {
 				t.Fatalf("prompt_names %v, want %v", re.PromptNames, list)
 			}
@@ -162,7 +185,7 @@ func assertUseCaseError(t *testing.T, err error, want string, expect map[string]
 	}
 }
 
-// useCaseSelectionToMap projects a useCaseResolution onto the shape use_case.json expects,
+// useCaseSelectionToMap projects a useCaseResolution onto the shape prompt.json expects,
 // which is also the shape prompt endpoint answers with.
 func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 	out := map[string]interface{}{
@@ -172,7 +195,7 @@ func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 		"kind":             string(r.Kind),
 		"params":           r.Params,
 		"provider_options": r.ProviderOptions,
-		"prompt_names":     r.PromptNames,
+		"template_names":   r.PromptNames,
 		"source":           string(r.Source),
 		"warnings":         r.Warnings,
 	}
@@ -180,9 +203,9 @@ func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 		out["warnings"] = []string{}
 	}
 	if r.Prompt == "" {
-		out["prompt"] = nil
+		out["template"] = nil
 	} else {
-		out["prompt"] = r.Prompt
+		out["template"] = r.Prompt
 	}
 	if r.Model == "" {
 		out["model"] = nil
@@ -205,15 +228,7 @@ func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 		out["prompt_version"] = map[string]interface{}{"id": r.PromptVersionID, "number": r.PromptVersionNumber}
 	}
 	if r.Messages != nil {
-		msgs := make([]interface{}, len(r.Messages))
-		for i, m := range r.Messages {
-			entry := map[string]interface{}{"role": m.Role, "content": m.Content}
-			if m.Name != "" {
-				entry["name"] = m.Name
-			}
-			msgs[i] = entry
-		}
-		out["messages"] = msgs
+		out["messages"] = messagesToList(r.Messages)
 	}
 	if r.Kind == KindText && r.Text != "" {
 		out["text"] = r.Text

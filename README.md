@@ -159,7 +159,7 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | …and nothing anywhere | Use case selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
 | Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
 | `UseCase` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
-| Any use-case document without exact integer `schema_version: 4` | Refuses it and keeps polling | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
+| Any use-case document outside supported integer `schema_version` 4 through 7 | Refuses it and keeps polling | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
 | Use case not in the document | — | `ErrUnknownUseCase` |
 | Use case with no live deployment | — | `ErrUnresolved` |
 | Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |

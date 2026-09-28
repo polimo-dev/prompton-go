@@ -13,6 +13,7 @@ type UseCase struct {
 	ModelID           string
 	Provider          string
 	Params            map[string]interface{}
+	Tools             map[string]interface{}
 
 	ProviderOptions     map[string]interface{}
 	DeploymentID        string
@@ -75,6 +76,7 @@ func (u *UseCase) replaceResolution(res *useCaseResolution) {
 	u.ModelID = res.ModelID
 	u.Provider = res.Provider
 	u.Params = res.Params
+	u.Tools = res.Tools
 	u.ProviderOptions = res.ProviderOptions
 	u.DeploymentID = res.DeploymentID
 	u.DeploymentRevision = res.DeploymentRevision

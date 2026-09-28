@@ -17,7 +17,7 @@ type fakeClock struct {
 }
 
 func newFakeClock() *fakeClock {
-	return &fakeClock{now: time.Date(2026, 9, 4, 9, 0, 0, 0, time.UTC)}
+	return &fakeClock{now: time.Now().UTC()}
 }
 
 func (c *fakeClock) Now() time.Time {
