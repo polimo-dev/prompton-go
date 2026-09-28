@@ -192,7 +192,7 @@ type Model struct {
 	Status          string                 `json:"status"`
 }
 
-// UseCaseDocument is a decoded GET /use-cases document: everything live in one
+// UseCaseDocument is a decoded GET /prompts document: everything live in one
 // environment, selected locally with no further network calls.
 type UseCaseDocument struct {
 	SchemaVersion  int
@@ -237,7 +237,7 @@ func (e *UnsupportedSchemaError) Error() string {
 	return fmt.Sprintf("prompton: unsupported use-case document schema_version %d (this SDK reads v%d)", e.Version, SchemaVersion)
 }
 
-// ParseUseCaseDocument decodes a GET /use-cases body.
+// ParseUseCaseDocument decodes a GET /prompts body.
 func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 	var raw rawUseCaseDocument
 	if err := decodeJSON(data, &raw); err != nil {

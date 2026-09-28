@@ -98,12 +98,12 @@ Precedence is **explicit option → environment variable → default**.
 | `Environment` | `PTN_ENVIRONMENT` | `production` | Which environment this process reads. Also the guard on the disk cache and the bundle |
 | `Project` | `PTN_PROJECT` | read from the API key | Names the default disk cache file |
 | `Mode` | — | `ModeLive` | `ModeLive`, `ModeTest` (no HTTP, logs captured), `ModeOffline` (disk and bundle only) |
-| `CacheTTL` | — | `10s` | How long a use-case document is served from memory before a conditional refresh. Also the base of the failure backoff |
+| `CacheTTL` | — | `10s` | How long a prompt document is served from memory before a conditional refresh. Also the base of the failure backoff |
 | `Timeout` | — | `5s` | Bounds one HTTP request |
 | `HTTPClient` | — | a client with `Timeout` | Your own `*http.Client` |
-| `DiskCachePath` | — | OS cache dir, named by project and environment | Where the use-case document is mirrored |
+| `DiskCachePath` | — | OS cache dir, named by project and environment | Where the prompt document is mirrored |
 | `DisableDiskCache` | — | `false` | Turns the disk tier off |
-| `BundlePath` | — | — | A use-case document JSON file shipped inside the app, used when memory and disk are empty |
+| `BundlePath` | — | — | A prompt document JSON file shipped inside the app, used when memory and disk are empty |
 | `HashEndUser` | — | `false` | Sends `sha256(end_user_ref)` instead of the raw reference |
 | `Redact` | — | — | `func(map[string]any) map[string]any`, applied to every record last |
 | `PayloadDefaults` | — | `full`, rate `1.0`, 256 KiB | Policy for a use case whose document carries none |
@@ -130,7 +130,7 @@ had a document. `UseCase.Source` records which one, and it travels with every mo
 `source`, so a stale deployment is visible in the data.
 
 **Polling.** Within `CacheTTL` every use-case selection is served from memory with no HTTP call. Past it the
-SDK refreshes with `GET /use-cases` + `If-None-Match` — a `304` carries no body and costs nothing.
+SDK refreshes with `GET /prompts` + `If-None-Match` — a `304` carries no body and costs nothing.
 The refresh runs in the background and is also nudged by the next call, so a scale-to-zero runtime
 still refreshes. It never blocks or fails a model call: while it is in flight, and if it fails, the
 previous document is served.
@@ -141,7 +141,7 @@ must not boot on a production bundle, and the file records both. For the same re
 `UseCase` refuses `WithEnvironment` for anything but the client's own environment: one process
 holds one environment's document. Use `RemoteUseCase`, or a second client, to read another.
 
-**Building a bundle.** `client.ExportUseCaseDocument("priv/prompton/use-cases.production.json")` writes the
+**Building a bundle.** `client.ExportUseCaseDocument("priv/prompton/prompts.production.json")` writes the
 document and its sidecar. Run it in CI on every build and commit the result; one file per
 environment, and load the one matching the process. `client.Refresh(ctx)` is the synchronous
 "fetch once now" for scripts and one-shot jobs.
@@ -152,14 +152,14 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 |---|---|---|
 | Within `CacheTTL` | Serves memory, no HTTP | The cached configuration |
 | `304 Not Modified` | Nothing to parse; the document and ETag stay | The cached configuration |
-| `429` on `/use-cases` | Waits out `Retry-After` (else `error.details.retry_after`, else backoff) before contacting the server again | The previous document. No error |
+| `429` on `/prompts` | Waits out `Retry-After` (else `error.details.retry_after`, else backoff) before contacting the server again | The previous document. No error |
 | `5xx`, timeout, DNS, connection refused | Backs off ×2 from `CacheTTL` up to 5 minutes, keeps the previous document, warns once a minute | The previous document. No error |
 | PromptOn unreachable at startup, disk cache present | Loads it, keeps polling | `Source: disk` |
 | …and no disk cache, bundle present | Loads it, keeps polling | `Source: bundle` |
 | …and nothing anywhere | Use case selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
 | Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
 | `UseCase` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
-| Any use-case document outside supported integer `schema_version` 4 through 7 | Refuses it and keeps polling | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
+| Any prompt document outside supported integer `schema_version` 4 through 7 | Refuses it and keeps polling | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
 | Use case not in the document | — | `ErrUnknownUseCase` |
 | Use case with no live deployment | — | `ErrUnresolved` |
 | Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |

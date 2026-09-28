@@ -276,7 +276,7 @@ func (rec *LogRecord) checkStartedAt(now time.Time) error {
 func (rec *LogRecord) toMap() map[string]interface{} {
 	out := map[string]interface{}{
 		"id":         rec.ID,
-		"use_case":   rec.UseCase,
+		"prompt_key": rec.UseCase,
 		"model":      rec.Model,
 		"status":     rec.Status,
 		"started_at": rec.StartedAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
@@ -286,7 +286,7 @@ func (rec *LogRecord) toMap() map[string]interface{} {
 	if rec.DeploymentRevision != 0 {
 		out["deployment_revision"] = rec.DeploymentRevision
 	}
-	putString(out, "prompt", rec.Prompt)
+	putString(out, "template", rec.Prompt)
 	putString(out, "prompt_version_id", rec.PromptVersionID)
 	putString(out, "model_id", rec.ModelID)
 	putString(out, "source", string(rec.Source))

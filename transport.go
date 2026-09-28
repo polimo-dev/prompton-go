@@ -49,14 +49,14 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 	return req, nil
 }
 
-// fetchSnapshot performs GET /use-cases with If-None-Match. A 304 carries no
+// fetchSnapshot performs GET /prompts with If-None-Match. A 304 carries no
 // body and nothing to parse.
 func (c *Client) fetchSnapshot(ctx context.Context, environment, etag string) (*snapshotResponse, error) {
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	query := url.Values{"environment": []string{environment}}
-	req, err := c.newRequest(ctx, http.MethodGet, "/use-cases", query, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, "/prompts", query, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +110,7 @@ func (r resolveRequest) body() map[string]interface{} {
 		out["environment"] = r.Environment
 	}
 	if r.Prompt != "" {
-		out["prompt"] = r.Prompt
+		out["template"] = r.Prompt
 	}
 	if r.Variables != nil {
 		out["variables"] = r.Variables
@@ -125,8 +125,8 @@ type resolveResponse struct {
 		ID       string `json:"id"`
 		Revision int    `json:"revision"`
 	} `json:"deployment"`
-	Prompt          *string                `json:"prompt"`
-	PromptNames     []string               `json:"prompt_names"`
+	Prompt          *string                `json:"template"`
+	PromptNames     []string               `json:"template_names"`
 	ModelID         *string                `json:"model_id"`
 	Model           *string                `json:"model"`
 	Provider        *string                `json:"provider"`
@@ -144,12 +144,32 @@ type resolveResponse struct {
 	ETag     string    `json:"etag"`
 }
 
+func (r *resolveResponse) UnmarshalJSON(data []byte) error {
+	type alias resolveResponse
+	var aux struct {
+		*alias
+		LegacyPrompt      *string  `json:"prompt"`
+		LegacyPromptNames []string `json:"prompt_names"`
+	}
+	aux.alias = (*alias)(r)
+	if err := decodeJSON(data, &aux); err != nil {
+		return err
+	}
+	if r.Prompt == nil {
+		r.Prompt = aux.LegacyPrompt
+	}
+	if len(r.PromptNames) == 0 && len(aux.LegacyPromptNames) > 0 {
+		r.PromptNames = aux.LegacyPromptNames
+	}
+	return nil
+}
+
 func (c *Client) postResolve(ctx context.Context, body resolveRequest) (*resolveResponse, error) {
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	payload := canonicalJSON(body.body())
-	path := "/use-cases/" + url.PathEscape(body.UseCase) + "/prompt"
+	path := "/prompts/" + url.PathEscape(body.UseCase) + "/render"
 	req, err := c.newRequest(ctx, http.MethodPost, path, nil, payload)
 	if err != nil {
 		return nil, err
@@ -257,11 +277,19 @@ func (c *Client) postEvents(ctx context.Context, environment string, events []ma
 		}
 		return nil, apiErr
 	}
-	var out BatchResult
+	var out struct {
+		Accepted   int             `json:"accepted"`
+		Duplicates int             `json:"duplicates"`
+		Rejected   []RejectedEntry `json:"rejected"`
+		Events     *BatchResult    `json:"events"`
+	}
 	if err := decodeJSON(data, &out); err != nil {
 		return nil, fmt.Errorf("prompton: invalid /logs response: %w", err)
 	}
-	return &out, nil
+	if out.Events != nil {
+		return out.Events, nil
+	}
+	return &BatchResult{Accepted: out.Accepted, Duplicates: out.Duplicates, Rejected: out.Rejected}, nil
 }
 
 func drainAndClose(resp *http.Response) {

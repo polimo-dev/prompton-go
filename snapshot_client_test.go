@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -50,7 +51,7 @@ func newSnapshotServer(t *testing.T, body string) *snapshotServer {
 	sum := sha256.Sum256([]byte(body))
 	s.etag = `"sha256-` + hex.EncodeToString(sum[:]) + `"`
 	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/use-cases", s.handleSnapshot)
+	mux.HandleFunc("/api/v1/prompts", s.handleSnapshot)
 	mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
@@ -553,7 +554,7 @@ func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 	if len(logs) != 1 {
 		t.Fatalf("expected 1 captured log, got %d", len(logs))
 	}
-	if logs[0]["use_case"] != "greeting" || logs[0]["model"] != "openai/gpt-4o-mini" {
+	if logs[0]["prompt_key"] != "greeting" || logs[0]["model"] != "openai/gpt-4o-mini" {
 		t.Fatalf("the resolution did not fill the record: %v", logs[0])
 	}
 	if logs[0]["source"] != "manual" {
@@ -614,5 +615,28 @@ func TestSchemaVersionReadsFiveThroughSeven(t *testing.T) {
 		if _, err := ParseUseCaseDocument([]byte(fmt.Sprintf(`{"schema_version":%d,"use_cases":{}}`, version))); err != nil {
 			t.Fatalf("schema_version %d should be accepted: %v", version, err)
 		}
+	}
+}
+
+func TestSnapshotFetchUsesCurrentPromptEndpointAndDocumentShape(t *testing.T) {
+	fixture, err := os.ReadFile("testdata/conformance/prompt.json")
+	if err != nil {
+		t.Fatalf("read prompt fixture: %v", err)
+	}
+	var suite struct {
+		Documents map[string]json.RawMessage `json:"documents"`
+	}
+	if err := json.Unmarshal(fixture, &suite); err != nil {
+		t.Fatalf("decode prompt fixture suite: %v", err)
+	}
+	server := newSnapshotServer(t, string(suite.Documents["production"]))
+	c := newTestClient(t, Config{
+		Host: server.URL, APIKey: "ptn_sdkfixture_test", Environment: "production",
+		CacheTTL: time.Hour,
+	})
+	waitForRemoteSnapshot(t, c)
+	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if res.Model != "openai/gpt-4o-mini" || len(res.PromptNames) == 0 {
+		t.Fatalf("unexpected current prompt fixture resolution: %+v", res)
 	}
 }

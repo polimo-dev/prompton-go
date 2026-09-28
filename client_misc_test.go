@@ -127,7 +127,7 @@ func newResolveServer(t *testing.T, body string) *resolveServer {
 const resolveBody = `{
   "key": "greeting", "kind": "chat",
   "deployment": {"id": "0198f2a1-0000-7000-8000-00000000d001", "revision": 3},
-  "prompt": "default", "prompt_names": ["default", "ko"],
+  "template": "default", "template_names": ["default", "ko"],
   "model_id": "0198f2a1-0000-7000-8000-00000000e001",
   "model": "openai/gpt-4o-mini", "provider": "openrouter",
   "params": {"temperature": 0.2},
@@ -224,7 +224,7 @@ func TestRemoteUseCaseMapsA404ToTheSameErrorAsLocalUseCase(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(404)
-		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no prompt","details":{"reason":"unknown_prompt","prompt":"fr","prompt_names":["default","ko"]}}}`))
+		_, _ = w.Write([]byte(`{"error":{"code":"not_found","message":"no prompt","details":{"reason":"unknown_template","template":"fr","template_names":["default","ko"]}}}`))
 	}))
 	defer srv.Close()
 	c := newTestClient(t, Config{Host: srv.URL, APIKey: "ptn_sdkfixture_test", Mode: ModeTest})

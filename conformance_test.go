@@ -162,15 +162,12 @@ func assertUseCaseError(t *testing.T, err error, want string, expect map[string]
 		if key, ok := expect["key"].(string); ok && re.UseCase != "" && re.UseCase != key {
 			t.Fatalf("key %q, want %q", re.UseCase, key)
 		}
-		if p, ok := expect["prompt"].(string); ok && re.Prompt != p {
-			t.Fatalf("prompt %q, want %q", re.Prompt, p)
-		}
 		if p, ok := expect["template"].(string); ok && re.Prompt != p {
 			t.Fatalf("template %q, want %q", re.Prompt, p)
 		}
-		list, ok := expect["prompt_names"].([]interface{})
+		list, ok := expect["template_names"].([]interface{})
 		if !ok {
-			list, ok = expect["template_names"].([]interface{})
+			list, ok = expect["prompt_names"].([]interface{})
 		}
 		if ok {
 			if len(list) != len(re.PromptNames) {
@@ -319,7 +316,7 @@ func TestConformanceLogRecords(t *testing.T) {
 		r := r
 		golden = append(golden, r.Record)
 		t.Run(r.Name, func(t *testing.T) {
-			for _, field := range suite.FieldRules.Required {
+			for _, field := range canonicalRequiredFields(suite.FieldRules.Required) {
 				if _, ok := r.Record[field]; !ok {
 					t.Errorf("required field %q is missing", field)
 				}
@@ -413,6 +410,18 @@ func withExplicitUsageNulls(record map[string]interface{}) map[string]interface{
 	return out
 }
 
+func canonicalRequiredFields(fields []string) []string {
+	out := make([]string, len(fields))
+	for i, field := range fields {
+		if field == "use_case" {
+			out[i] = "prompt_key"
+		} else {
+			out[i] = field
+		}
+	}
+	return out
+}
+
 // recordFromGolden reads a golden wire record back into a LogRecord, so
 // the round-trip exercises the builder rather than a hand-written map.
 func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
@@ -423,7 +432,7 @@ func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
 	}
 	rec := LogRecord{
 		ID:                 str(m["id"]),
-		UseCase:            str(m["use_case"]),
+		UseCase:            str(m["prompt_key"]),
 		Kind:               Kind(str(m["kind"])),
 		Model:              str(m["model"]),
 		Status:             str(m["status"]),
@@ -431,7 +440,7 @@ func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
 		LatencyMS:          num(m["latency_ms"]),
 		DeploymentID:       str(m["deployment_id"]),
 		DeploymentRevision: num(m["deployment_revision"]),
-		Prompt:             str(m["prompt"]),
+		Prompt:             str(m["template"]),
 		PromptVersionID:    str(m["prompt_version_id"]),
 		ModelID:            str(m["model_id"]),
 		Source:             Source(str(m["source"])),

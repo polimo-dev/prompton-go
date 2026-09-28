@@ -380,10 +380,10 @@ func TestTrackLogsASuccess(t *testing.T) {
 		t.Fatalf("Track returned %v, %v", out, err)
 	}
 	rec := c.Recorded()[0]
-	if rec["status"] != "ok" || rec["stop_kind"] != "stop" || rec["use_case"] != "greeting" {
+	if rec["status"] != "ok" || rec["stop_kind"] != "stop" || rec["prompt_key"] != "greeting" {
 		t.Fatalf("unexpected record: %v", rec)
 	}
-	if rec["deployment_id"] != res.DeploymentID || rec["prompt"] != "default" {
+	if rec["deployment_id"] != res.DeploymentID || rec["template"] != "default" {
 		t.Fatalf("the resolution evidence is missing: %v", rec)
 	}
 	if _, ok := rec["latency_ms"]; !ok {
@@ -443,8 +443,8 @@ func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 		t.Fatalf("Track: %v", err)
 	}
 	rec := c.Recorded()[0]
-	if rec["prompt"] != "ko" {
-		t.Fatalf("prompt evidence = %v, want ko in %v", rec["prompt"], rec)
+	if rec["template"] != "ko" {
+		t.Fatalf("prompt evidence = %v, want ko in %v", rec["template"], rec)
 	}
 	if rec["prompt_version_id"] != "0198f2a1-0000-7000-8000-00000000a002" {
 		t.Fatalf("prompt_version_id = %v, want ko prompt version", rec["prompt_version_id"])
@@ -819,7 +819,7 @@ func assertLaneBytes(t *testing.T, b *logBuffer) {
 
 func TestLogEventsPostsEventsEnvelopeAndFillsStableFields(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptLogs("", []int{202, 202}, []string{`{"accepted":1,"duplicates":0,"rejected":[]}`, `{"accepted":1,"duplicates":0,"rejected":[]}`})
+	server.scriptLogs("", []int{202, 202}, []string{`{"accepted":0,"duplicates":0,"rejected":[],"events":{"accepted":1,"duplicates":0,"rejected":[]}}`, `{"accepted":0,"duplicates":0,"rejected":[],"events":{"accepted":1,"duplicates":0,"rejected":[]}}`})
 	c, _ := newLoggingClient(t, server, nil)
 	events := []TraceEvent{{
 		"trace_id":     "trace-1",

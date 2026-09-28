@@ -139,10 +139,17 @@ func useCaseErrorFromAPI(useCase string, e *APIError) error {
 	switch reason {
 	case "unresolved":
 		return &UseCaseError{Code: "unresolved", UseCase: useCase}
-	case "unknown_prompt":
-		prompt, _ := e.Details["prompt"].(string)
+	case "unknown_prompt", "unknown_template":
+		prompt, _ := e.Details["template"].(string)
+		if prompt == "" {
+			prompt, _ = e.Details["prompt"].(string)
+		}
 		var available []string
-		if list, ok := e.Details["prompt_names"].([]interface{}); ok {
+		list, ok := e.Details["template_names"].([]interface{})
+		if !ok {
+			list, ok = e.Details["prompt_names"].([]interface{})
+		}
+		if ok {
 			for _, v := range list {
 				if s, ok := v.(string); ok {
 					available = append(available, s)
