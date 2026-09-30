@@ -17,7 +17,7 @@ type UseCase struct {
 
 	ProviderOptions     map[string]interface{}
 	DeploymentID        string
-	DeploymentRevision  int
+	DeploymentRevision  string
 	Prompt              string
 	PromptNames         []string
 	PromptVersionID     string

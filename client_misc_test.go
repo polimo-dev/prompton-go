@@ -126,7 +126,7 @@ func newResolveServer(t *testing.T, body string) *resolveServer {
 
 const resolveBody = `{
   "key": "greeting", "kind": "chat",
-  "deployment": {"id": "0198f2a1-0000-7000-8000-00000000d001", "revision": 3},
+  "deployment": {"id": "0198f2a1-0000-7000-8000-00000000d001", "revision": "v2026.09.30-3"},
   "template": "default", "template_names": ["default", "ko"],
   "model_id": "0198f2a1-0000-7000-8000-00000000e001",
   "model": "openai/gpt-4o-mini", "provider": "openrouter",
@@ -156,7 +156,7 @@ func TestRemoteUseCaseCachesAndRendersLocally(t *testing.T) {
 		if messages[1].Content != "Say hello to Ada." {
 			t.Fatalf("rendered %q", messages[1].Content)
 		}
-		if res.Model != "openai/gpt-4o-mini" || res.DeploymentRevision != 3 {
+		if res.Model != "openai/gpt-4o-mini" || res.DeploymentRevision != "v2026.09.30-3" {
 			t.Fatalf("unexpected use case: %+v", res)
 		}
 	}

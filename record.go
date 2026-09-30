@@ -156,7 +156,7 @@ type LogRecord struct {
 	useCaseResolution *useCaseResolution
 
 	DeploymentID       string
-	DeploymentRevision int
+	DeploymentRevision string
 	Prompt             string
 	PromptVersionID    string
 	ModelID            string
@@ -224,7 +224,7 @@ func (rec *LogRecord) applyResolution() {
 	if rec.DeploymentID == "" {
 		rec.DeploymentID = r.DeploymentID
 	}
-	if rec.DeploymentRevision == 0 {
+	if rec.DeploymentRevision == "" {
 		rec.DeploymentRevision = r.DeploymentRevision
 	}
 	if rec.Prompt == "" {
@@ -283,7 +283,7 @@ func (rec *LogRecord) toMap() map[string]interface{} {
 	}
 	putString(out, "kind", string(rec.Kind))
 	putString(out, "deployment_id", rec.DeploymentID)
-	if rec.DeploymentRevision != 0 {
+	if rec.DeploymentRevision != "" {
 		out["deployment_revision"] = rec.DeploymentRevision
 	}
 	putString(out, "template", rec.Prompt)
@@ -419,7 +419,9 @@ func messagesToList(messages []Message) []interface{} {
 			entry["role"] = m.Role
 		}
 		if m.hasContent || m.Content != "" || m.Type != "slot" {
-			entry["content"] = m.ContentValue()
+			if content := m.ContentValue(); content != nil {
+				entry["content"] = content
+			}
 		}
 		if m.Name != "" {
 			entry["name"] = m.Name

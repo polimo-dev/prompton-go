@@ -123,7 +123,7 @@ func TestLiveLocalUseCaseMatchesServerPromptEndpoint(t *testing.T) {
 				t.Fatalf("model differs: local %+v, server %+v", local, server)
 			}
 			if local.DeploymentID != server.DeploymentID || local.DeploymentRevision != server.DeploymentRevision {
-				t.Fatalf("deployment differs: %s/%d vs %s/%d",
+				t.Fatalf("deployment differs: %s/%s vs %s/%s",
 					local.DeploymentID, local.DeploymentRevision, server.DeploymentID, server.DeploymentRevision)
 			}
 			if local.PromptVersionID != server.PromptVersionID || local.Prompt != server.Prompt {

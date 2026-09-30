@@ -70,7 +70,7 @@ func main() {
 	}
 
 	fmt.Printf("use case      %s (%s)\n", res.Key, res.Kind)
-	fmt.Printf("deployment    %s revision %d\n", res.DeploymentID, res.DeploymentRevision)
+	fmt.Printf("deployment    %s revision %s\n", res.DeploymentID, res.DeploymentRevision)
 	fmt.Printf("prompt        %s (version %d of %v)\n", res.Prompt, res.PromptVersionNumber, res.PromptNames)
 	fmt.Printf("model         %s via %s\n", res.Model, res.Provider)
 	fmt.Printf("params        %v\n", res.Params)

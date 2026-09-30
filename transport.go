@@ -137,7 +137,7 @@ type resolveResponse struct {
 	Kind       string `json:"kind"`
 	Deployment struct {
 		ID       string `json:"id"`
-		Revision int    `json:"revision"`
+		Revision string `json:"revision"`
 	} `json:"deployment"`
 	Prompt          *string                `json:"template"`
 	PromptNames     []string               `json:"template_names"`

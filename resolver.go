@@ -35,7 +35,7 @@ type useCaseResolution struct {
 	Kind    Kind
 
 	DeploymentID       string
-	DeploymentRevision int
+	DeploymentRevision string
 
 	// Prompt is the chosen prompt name, empty for an embedding use case.
 	Prompt string

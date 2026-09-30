@@ -9,7 +9,7 @@
             "plan": "pro"
           },
           "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
-          "deployment_revision": 3,
+          "deployment_revision": "v2026.09.30-3",
           "end_user_ref": "user-42",
           "finish_reason": "stop",
           "id": "0198f2a1-1111-7000-8000-000000000001",
@@ -49,7 +49,7 @@
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.2.0"
+            "version": "0.5.0"
           },
           "sequence": 1,
           "source": "remote",
@@ -61,7 +61,7 @@
           "upstream_provider": "OpenAI",
           "usage": {
             "cost_source": "provider",
-            "cost_usd": 0.000112,
+            "cost_usd": 1.12e-4,
             "input_tokens": 38,
             "output_tokens": 9,
             "raw": {
@@ -74,7 +74,7 @@
         {
           "context": {},
           "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
-          "deployment_revision": 3,
+          "deployment_revision": "v2026.09.30-3",
           "error": {
             "kind": "rate_limited",
             "message": "rate limited by upstream provider",
@@ -109,7 +109,7 @@
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.2.0"
+            "version": "0.5.0"
           },
           "sequence": 2,
           "source": "remote",
@@ -128,7 +128,7 @@
         {
           "context": {},
           "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
-          "deployment_revision": 3,
+          "deployment_revision": "v2026.09.30-3",
           "error": {
             "kind": "parse",
             "message": "unexpected end of JSON input"
@@ -166,7 +166,7 @@
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.2.0"
+            "version": "0.5.0"
           },
           "source": "remote",
           "started_at": "2026-09-04T09:00:00.000000Z",
@@ -176,7 +176,7 @@
           "trace_id": "oban:8844",
           "usage": {
             "cost_source": "provider",
-            "cost_usd": 0.000208,
+            "cost_usd": 2.08e-4,
             "input_tokens": 38,
             "output_tokens": 512,
             "raw": null
@@ -185,7 +185,7 @@
         {
           "context": {},
           "deployment_id": "0198f2a1-0000-7000-8000-00000000d003",
-          "deployment_revision": 2,
+          "deployment_revision": "v2026.09.30-2",
           "id": "0198f2a1-1111-7000-8000-000000000004",
           "input": {
             "variables": {
@@ -205,7 +205,7 @@
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.2.0"
+            "version": "0.5.0"
           },
           "source": "disk",
           "started_at": "2026-09-04T09:00:00.000000Z",
@@ -213,7 +213,7 @@
           "trace_id": "ingest:2026-09-04:batch-7",
           "usage": {
             "cost_source": "catalog",
-            "cost_usd": 1.2e-06,
+            "cost_usd": 1.2e-6,
             "input_tokens": 14,
             "output_tokens": 0,
             "raw": null
@@ -221,7 +221,7 @@
         },
         {
           "deployment_id": "0198f2a1-0000-7000-8000-00000000d002",
-          "deployment_revision": 1,
+          "deployment_revision": "v2026.09.30-1",
           "finish_reason": "stop",
           "id": "0198f2a1-1111-7000-8000-000000000005",
           "input": {
@@ -239,7 +239,7 @@
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.2.0"
+            "version": "0.5.0"
           },
           "source": "bundle",
           "started_at": "2026-09-04T09:00:00.000000Z",
@@ -293,7 +293,7 @@
     "kind": "chat | text | embedding (defaults to chat)",
     "model": "the provider model string that was actually requested",
     "null_keys": "the SDK omits a TOP-LEVEL key whose value is null; nested nulls inside usage are sent as null and accepted",
-    "prompt_key": "the use case key, at most 512 bytes",
+    "prompt_key": "the prompt key, at most 512 bytes",
     "provider": "openrouter | groq | openai | anthropic | google | other (unknown becomes other)",
     "required": [
       "id",
@@ -311,11 +311,11 @@
   },
   "format_version": 1,
   "generated_from": {
-    "commit": "14d4817832d8a906a461ad708f3245796f6be4b1",
+    "commit": "b8abd0194cb5fadef445ca6fbc1fba72a819b83f",
     "language": "elixir",
     "repo": "https://github.com/polimo-dev/prompton-elixir",
     "sdk": "prompton_sdk",
-    "sdk_version": "0.2.0"
+    "sdk_version": "0.5.0"
   },
   "records": [
     {
@@ -328,7 +328,7 @@
           "plan": "pro"
         },
         "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
-        "deployment_revision": 3,
+        "deployment_revision": "v2026.09.30-3",
         "end_user_ref": "user-42",
         "finish_reason": "stop",
         "id": "0198f2a1-1111-7000-8000-000000000001",
@@ -368,7 +368,7 @@
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.2.0"
+          "version": "0.5.0"
         },
         "sequence": 1,
         "source": "remote",
@@ -380,7 +380,7 @@
         "upstream_provider": "OpenAI",
         "usage": {
           "cost_source": "provider",
-          "cost_usd": 0.000112,
+          "cost_usd": 1.12e-4,
           "input_tokens": 38,
           "output_tokens": 9,
           "raw": {
@@ -398,7 +398,7 @@
       "record": {
         "context": {},
         "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
-        "deployment_revision": 3,
+        "deployment_revision": "v2026.09.30-3",
         "error": {
           "kind": "rate_limited",
           "message": "rate limited by upstream provider",
@@ -433,7 +433,7 @@
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.2.0"
+          "version": "0.5.0"
         },
         "sequence": 2,
         "source": "remote",
@@ -457,7 +457,7 @@
       "record": {
         "context": {},
         "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
-        "deployment_revision": 3,
+        "deployment_revision": "v2026.09.30-3",
         "error": {
           "kind": "parse",
           "message": "unexpected end of JSON input"
@@ -495,7 +495,7 @@
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.2.0"
+          "version": "0.5.0"
         },
         "source": "remote",
         "started_at": "2026-09-04T09:00:00.000000Z",
@@ -505,7 +505,7 @@
         "trace_id": "oban:8844",
         "usage": {
           "cost_source": "provider",
-          "cost_usd": 0.000208,
+          "cost_usd": 2.08e-4,
           "input_tokens": 38,
           "output_tokens": 512,
           "raw": null
@@ -514,12 +514,12 @@
     },
     {
       "built_by": "PromptOnSDK.track/3",
-      "description": "An embedding log: kind is embedding, there is no prompt or prompt_version_id, the input is text and only input_tokens are reported. source records that the use-case document came from the disk cache.",
+      "description": "An embedding log: kind is embedding, there is no template or prompt_version_id, the input is text and only input_tokens are reported. source records that the prompt document came from the disk cache.",
       "name": "embedding/success",
       "record": {
         "context": {},
         "deployment_id": "0198f2a1-0000-7000-8000-00000000d003",
-        "deployment_revision": 2,
+        "deployment_revision": "v2026.09.30-2",
         "id": "0198f2a1-1111-7000-8000-000000000004",
         "input": {
           "variables": {
@@ -539,7 +539,7 @@
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.2.0"
+          "version": "0.5.0"
         },
         "source": "disk",
         "started_at": "2026-09-04T09:00:00.000000Z",
@@ -547,7 +547,7 @@
         "trace_id": "ingest:2026-09-04:batch-7",
         "usage": {
           "cost_source": "catalog",
-          "cost_usd": 1.2e-06,
+          "cost_usd": 1.2e-6,
           "input_tokens": 14,
           "output_tokens": 0,
           "raw": null
@@ -556,11 +556,11 @@
     },
     {
       "built_by": "hand-assembled map passed to PromptOnSDK.log/1",
-      "description": "A record an app assembles itself, for a streaming call or a background job that does not wrap the provider call. input.text carries a single prompt string instead of a message list, and the record is minimal: only the five required fields plus what the app knows.",
+      "description": "A record an app assembles itself, for a streaming call or a background job that does not wrap the provider call. input.text carries a single template string instead of a message list, and the record is minimal: only the five required fields plus what the app knows.",
       "name": "text/manual_log_with_input_text",
       "record": {
         "deployment_id": "0198f2a1-0000-7000-8000-00000000d002",
-        "deployment_revision": 1,
+        "deployment_revision": "v2026.09.30-1",
         "finish_reason": "stop",
         "id": "0198f2a1-1111-7000-8000-000000000005",
         "input": {
@@ -578,7 +578,7 @@
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.2.0"
+          "version": "0.5.0"
         },
         "source": "bundle",
         "started_at": "2026-09-04T09:00:00.000000Z",

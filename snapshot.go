@@ -160,7 +160,7 @@ type DocumentUseCase struct {
 type Deployment struct {
 	ID              string                 `json:"id"`
 	UseCase         string                 `json:"-"`
-	Revision        int                    `json:"revision"`
+	Revision        string                 `json:"revision"`
 	ModelID         string                 `json:"model_id"`
 	Params          map[string]interface{} `json:"params"`
 	ProviderOptions map[string]interface{} `json:"provider_options"`

@@ -835,7 +835,7 @@
       },
       "name": "nonnormative/unknown_filter_is_applied_at_render_time",
       "normative": false,
-      "note": "The filter whitelist is enforced by lint/1 (and by the server when a prompt version is committed), NOT by render. solid applies any filter it knows. An SDK whose template engine only implements size/join/default may raise instead; both are acceptable, because such a template can never be committed to PromptOn.",
+      "note": "The filter whitelist is enforced by lint/1 (and by the server when a template version is committed), NOT by render. solid applies any filter it knows. An SDK whose template engine only implements size/join/default may raise instead; both are acceptable, because such a template can never be committed to PromptOn.",
       "template": "{{ s | upcase }}",
       "variables": {
         "s": "abc"
@@ -894,11 +894,11 @@
   },
   "format_version": 1,
   "generated_from": {
-    "commit": "14d4817832d8a906a461ad708f3245796f6be4b1",
+    "commit": "b8abd0194cb5fadef445ca6fbc1fba72a819b83f",
     "language": "elixir",
     "repo": "https://github.com/polimo-dev/prompton-elixir",
     "sdk": "prompton_sdk",
-    "sdk_version": "0.2.0"
+    "sdk_version": "0.5.0"
   },
   "lint_cases": [
     {

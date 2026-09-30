@@ -439,7 +439,7 @@ func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
 		StartedAt:          started,
 		LatencyMS:          num(m["latency_ms"]),
 		DeploymentID:       str(m["deployment_id"]),
-		DeploymentRevision: num(m["deployment_revision"]),
+		DeploymentRevision: str(m["deployment_revision"]),
 		Prompt:             str(m["template"]),
 		PromptVersionID:    str(m["prompt_version_id"]),
 		ModelID:            str(m["model_id"]),
