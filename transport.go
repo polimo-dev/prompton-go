@@ -52,18 +52,32 @@ func (c *Client) newRequest(ctx context.Context, method, path string, query url.
 // fetchSnapshot performs GET /prompts with If-None-Match. A 304 carries no
 // body and nothing to parse.
 func (c *Client) fetchSnapshot(ctx context.Context, environment, etag string) (*snapshotResponse, error) {
+	return c.fetchSnapshotPath(ctx, "/prompts", environment, etag)
+}
+
+// fetchPromptSnapshot performs GET /prompts/{key} with If-None-Match. It is the runtime config
+// path: one prompt key, one conditional request, no bulk fallback.
+func (c *Client) fetchPromptSnapshot(ctx context.Context, key, environment, etag string) (*snapshotResponse, error) {
+	return c.fetchSnapshotPath(ctx, "/prompts/"+url.PathEscape(key), environment, etag)
+}
+
+func (c *Client) fetchSnapshotPath(ctx context.Context, path, environment, etag string) (*snapshotResponse, error) {
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	query := url.Values{"environment": []string{environment}}
-	req, err := c.newRequest(ctx, http.MethodGet, "/prompts", query, nil)
+	req, err := c.newRequest(ctx, http.MethodGet, path, query, nil)
 	if err != nil {
 		return nil, err
 	}
 	if etag != "" {
 		req.Header.Set("If-None-Match", etag)
 	}
-	resp, err := c.cfg.HTTPClient.Do(req)
+	// Runtime config fetches are single-shot attempts. The default config HTTP
+	// client disables keep-alives so the transport cannot retry an idempotent GET
+	// on a stale reused connection.
+	req.Close = true
+	resp, err := c.cfg.configHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

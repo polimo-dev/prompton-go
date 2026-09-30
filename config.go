@@ -12,7 +12,7 @@ import (
 
 // Version is the SDK version, sent as the User-Agent and in every monitoring
 // log's sdk field.
-const Version = "0.4.1"
+const Version = "0.5.0"
 
 // SDKName is the name this SDK reports in the sdk field of a monitoring log.
 const SDKName = "prompton-go"
@@ -30,7 +30,7 @@ type Mode string
 
 // The three modes.
 const (
-	// ModeLive is the normal mode: poll the use-case document, send monitoring logs.
+	// ModeLive is the normal mode: fetch prompt config on demand, send monitoring logs.
 	ModeLive Mode = "live"
 	// ModeTest makes no HTTP calls at all and captures monitoring logs in
 	// memory for assertions. Snapshots are injected with SetUseCaseDocument.
@@ -64,12 +64,11 @@ type Config struct {
 	// Mode defaults to ModeLive.
 	Mode Mode
 
-	// CacheTTL is how long a use-case document is served from memory before the SDK
-	// refreshes it with If-None-Match. Default 10s. It is also the base of the
-	// failure backoff.
+	// CacheTTL is retained for compatibility with older full-document refresh flows.
+	// Runtime prompt config fetches use the SDK contract of 10 seconds.
 	CacheTTL time.Duration
 
-	// Timeout bounds a single HTTP request. Default 5s.
+	// Timeout bounds a single HTTP request. Runtime config fetches are additionally capped at 1s.
 	Timeout time.Duration
 
 	// HTTPClient replaces the default client. Its own Timeout, if set, wins.
@@ -123,7 +122,9 @@ type Config struct {
 	// UserAgent overrides the default prompton-go/<version>.
 	UserAgent string
 
-	now func() time.Time
+	now              func() time.Time
+	configHTTPClient *http.Client
+	configCacheTTL   time.Duration
 }
 
 func (c *Config) withDefaults() (Config, error) {
@@ -163,6 +164,9 @@ func (c *Config) withDefaults() (Config, error) {
 
 	if out.CacheTTL <= 0 {
 		out.CacheTTL = 10 * time.Second
+	}
+	if out.configCacheTTL <= 0 {
+		out.configCacheTTL = 10 * time.Second
 	}
 	if out.Timeout <= 0 {
 		out.Timeout = 5 * time.Second
@@ -207,6 +211,11 @@ func (c *Config) withDefaults() (Config, error) {
 	}
 	if out.HTTPClient == nil {
 		out.HTTPClient = &http.Client{Timeout: out.Timeout}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.DisableKeepAlives = true
+		out.configHTTPClient = &http.Client{Timeout: out.Timeout, Transport: transport}
+	} else {
+		out.configHTTPClient = out.HTTPClient
 	}
 	if !out.DisableDiskCache && out.DiskCachePath == "" {
 		out.DiskCachePath = defaultDiskCachePath(out.Project, out.Environment)

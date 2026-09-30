@@ -1,6 +1,7 @@
 package prompton
 
 import (
+	"encoding/base64"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,12 +10,11 @@ import (
 	"time"
 )
 
-// The snapshot store is three tiers and nothing else: memory, one local file,
-// and a file shipped inside the app. No database, no Redis, no shared cache —
-// instances never coordinate, and ETag polling makes that cheap. Several
-// processes on one host may share the disk file: writes are atomic, readers
-// tolerate a concurrent rename, and a corrupt or partial file is ignored rather
-// than raised.
+// The snapshot store keeps immutable documents per use case, plus one local
+// disk file and an optional bundled file. No database, no Redis, no shared
+// cache: instances never coordinate. Several processes on one host may share
+// the disk file: writes are atomic, readers tolerate a concurrent rename, and
+// a corrupt or partial file is ignored rather than raised.
 
 type snapshotEntry struct {
 	snapshot     *UseCaseDocument
@@ -23,50 +23,108 @@ type snapshotEntry struct {
 	source       Source
 	fetchedAt    time.Time
 	staleSince   time.Time
+	lastAttempt  time.Time
 }
 
 type snapshotStore struct {
-	mu    sync.RWMutex
-	entry *snapshotEntry
+	mu      sync.RWMutex
+	entries map[string]*snapshotEntry
 }
 
-func (s *snapshotStore) get() *snapshotEntry {
+func (s *snapshotStore) get(key string) *snapshotEntry {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.entry
+	entry := s.entries[key]
+	if entry == nil || entry.snapshot == nil {
+		return nil
+	}
+	return entry
 }
 
-func (s *snapshotStore) put(e *snapshotEntry) {
+func (s *snapshotStore) any() *snapshotEntry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, entry := range s.entries {
+		if entry != nil && entry.snapshot != nil {
+			return entry
+		}
+	}
+	return nil
+}
+
+func (s *snapshotStore) put(key string, e *snapshotEntry) {
 	s.mu.Lock()
-	s.entry = e
+	if s.entries == nil {
+		s.entries = map[string]*snapshotEntry{}
+	}
+	s.entries[key] = e
+	s.mu.Unlock()
+}
+
+func (s *snapshotStore) putDocument(e *snapshotEntry) {
+	s.mu.Lock()
+	if s.entries == nil {
+		s.entries = map[string]*snapshotEntry{}
+	}
+	for key := range e.snapshot.UseCases {
+		clone := *e
+		s.entries[key] = &clone
+	}
 	s.mu.Unlock()
 }
 
 // markStale records that a refresh failed while keeping the document in place.
 // A generation must never fail because PromptOn did: config is stale in the
 // worst case, not absent.
-func (s *snapshotStore) markStale(at time.Time) {
+func (s *snapshotStore) markStale(key string, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.entry != nil && s.entry.staleSince.IsZero() {
-		clone := *s.entry
+	if s.entries == nil {
+		return
+	}
+	if entry := s.entries[key]; entry != nil && entry.snapshot != nil && entry.staleSince.IsZero() {
+		clone := *entry
 		clone.staleSince = at
-		s.entry = &clone
+		s.entries[key] = &clone
 	}
 }
 
 // markFresh promotes an entry after the server confirmed its ETag is current.
-func (s *snapshotStore) markFresh(source Source, at time.Time) {
+func (s *snapshotStore) markFresh(key string, source Source, at time.Time) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.entry == nil {
+	if s.entries == nil || s.entries[key] == nil || s.entries[key].snapshot == nil {
 		return
 	}
-	clone := *s.entry
+	clone := *s.entries[key]
 	clone.source = source
 	clone.staleSince = time.Time{}
 	clone.fetchedAt = at
-	s.entry = &clone
+	s.entries[key] = &clone
+}
+
+func (s *snapshotStore) noteAttempt(key string, at time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.entries == nil {
+		s.entries = map[string]*snapshotEntry{}
+	}
+	if entry := s.entries[key]; entry != nil {
+		clone := *entry
+		clone.lastAttempt = at
+		s.entries[key] = &clone
+		return
+	}
+	s.entries[key] = &snapshotEntry{lastAttempt: at}
+}
+
+func (s *snapshotStore) lastAttempt(key string) time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.entries == nil || s.entries[key] == nil {
+		return time.Time{}
+	}
+	return s.entries[key].lastAttempt
 }
 
 // UseCaseDocumentInfo describes the document resolution is currently reading.
@@ -101,6 +159,33 @@ type sidecar struct {
 }
 
 func sidecarPath(path string) string { return path + ".meta.json" }
+
+func keySnapshotDir(path string) string { return path + ".prompts" }
+
+func keySnapshotPath(path, key string) string {
+	name := base64.RawURLEncoding.EncodeToString([]byte(key)) + ".json"
+	return filepath.Join(keySnapshotDir(path), name)
+}
+
+func readKeySnapshotFiles(path, environment, project string) ([]*snapshotEntry, error) {
+	dir := keySnapshotDir(path)
+	files, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*snapshotEntry, 0, len(files))
+	for _, file := range files {
+		if file.IsDir() || filepath.Ext(file.Name()) != ".json" {
+			continue
+		}
+		entry, err := readSnapshotFile(filepath.Join(dir, file.Name()), environment, project)
+		if err != nil {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out, nil
+}
 
 // readSnapshotFile loads a snapshot document and its sidecar, refusing a
 // document from another environment or project. A staging process must not boot

@@ -4,6 +4,17 @@ All notable changes to this SDK are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.5.0
+
+- Runtime prompt configuration is now demand-driven: `UseCase` fetches only
+  `GET /api/v1/prompts/{key}?environment=...` when that key is missing or stale.
+- Startup and idle clients no longer fetch or poll configuration. Disk and bundle loading remain
+  local-only fallback tiers.
+- Config fetches are cached and rate-limited per prompt key for 10 seconds, share an in-flight
+  same-key request, use a 1-second total fetch budget, and do not retry. Failures keep serving the
+  last valid value, even when expired.
+- `Refresh` is now a compatibility no-op for runtime clients; normal lookup never falls back to the bulk endpoint. Runtime key fetches persist immutable per-key disk snapshots for restart fallback.
+
 ## 0.4.1
 
 - Patch runtime HTTP compatibility with the current server: SDK fetches use `GET /api/v1/prompts`, remote rendering uses `POST /api/v1/prompts/{key}/render`, and monitoring logs send `prompt_key`.
@@ -37,7 +48,7 @@ Breaking vocabulary cleanup for the schema-v4 use-case document contract.
 Initial release.
 
 - `Client` with three tiers of snapshot storage — memory, an atomically written disk cache with an
-  ETag sidecar, and a bundle shipped inside the app — loaded in that order and never mixed across
+  ETag sidecar, per-key runtime disk snapshots, and a bundle shipped inside the app — loaded in that order and never mixed across
   environments or projects.
 - Conditional polling with `If-None-Match` on a 10-second cache TTL, refreshed in the background
   and nudged by the next call. A refresh never blocks or fails a generation: `429` waits out

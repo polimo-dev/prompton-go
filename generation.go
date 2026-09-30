@@ -257,7 +257,7 @@ func (c *Client) policyFor(rec *LogRecord) *PayloadPolicy {
 	if evidence != nil && evidence.PayloadPolicy != nil {
 		return evidence.PayloadPolicy
 	}
-	entry := c.store.get()
+	entry := c.store.get(rec.UseCase)
 	if entry == nil {
 		return nil
 	}

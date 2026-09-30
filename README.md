@@ -98,8 +98,8 @@ Precedence is **explicit option → environment variable → default**.
 | `Environment` | `PTN_ENVIRONMENT` | `production` | Which environment this process reads. Also the guard on the disk cache and the bundle |
 | `Project` | `PTN_PROJECT` | read from the API key | Names the default disk cache file |
 | `Mode` | — | `ModeLive` | `ModeLive`, `ModeTest` (no HTTP, logs captured), `ModeOffline` (disk and bundle only) |
-| `CacheTTL` | — | `10s` | How long a prompt document is served from memory before a conditional refresh. Also the base of the failure backoff |
-| `Timeout` | — | `5s` | Bounds one HTTP request |
+| `CacheTTL` | — | `10s` | Legacy full-document and remote prompt cache TTL. Runtime config fetch freshness and attempt gates are fixed at 10s by the SDK contract |
+| `Timeout` | — | `5s` | Bounds HTTP requests; runtime config fetches are also capped at 1 second total |
 | `HTTPClient` | — | a client with `Timeout` | Your own `*http.Client` |
 | `DiskCachePath` | — | OS cache dir, named by project and environment | Where the prompt document is mirrored |
 | `DisableDiskCache` | — | `false` | Turns the disk tier off |
@@ -120,20 +120,27 @@ is stale in the worst case, not absent.
 
 **Three tiers, and nothing else.** Memory, one local file, and a file bundled into the app. No
 database, no Redis, no shared cache to operate. Instances never coordinate — each keeps its own
-copy, and ETag polling makes that cheap. Several processes on one host may share the disk file:
+copy. Runtime key fetches are also mirrored as immutable per-key documents under a sibling `.prompts/` directory so a restart can fall back to the last value for each key independently. Several processes on one host may share the disk files:
 writes are atomic (temp file, then rename), readers tolerate a concurrent rename, and a corrupt or
 partial file is ignored rather than raised.
 
-**Load order at startup**: memory → disk → bundle → remote. `New` never blocks on the network; the
-first fetch happens in the background, so the first model call is answered by whatever tier already
-had a document. `UseCase.Source` records which one, and it travels with every monitoring log as
+**Load order at startup**: memory → disk → bundle. `New` never contacts PromptOn and starts no
+config poller. A process that is alive but not preparing an LLM call sends no config-fetch traffic.
+`UseCase.Source` records the tier used for the call, and it travels with every monitoring log as
 `source`, so a stale deployment is visible in the data.
 
-**Polling.** Within `CacheTTL` every use-case selection is served from memory with no HTTP call. Past it the
-SDK refreshes with `GET /prompts` + `If-None-Match` — a `304` carries no body and costs nothing.
-The refresh runs in the background and is also nudged by the next call, so a scale-to-zero runtime
-still refreshes. It never blocks or fails a model call: while it is in flight, and if it fails, the
-previous document is served.
+**Demand fetch.** `UseCase(ctx, key)` is the runtime config boundary. If that key has a fresh
+cached document, the SDK serves memory with no HTTP call. If it is missing or older than
+the fixed 10-second runtime freshness window, the SDK makes one conditional request to
+`GET /api/v1/prompts/{key}?environment=...` with that key's ETag. A successful `200` replaces only
+that key's cached document; a meaningful `304` promotes the cached value to fresh.
+
+Each key has its own 10-second attempt gate, measured from attempt start, and same-key concurrent
+callers share the one in-flight fetch. Different keys are independent. Runtime config fetch has a
+1-second total budget including body read, and the SDK does not retry. The default config transport disables keep-alives to avoid stale reused-connection retries; a custom `HTTPClient` is called once and is responsible for not retrying internally. If the fetch fails, times
+out, returns an error status, or returns an invalid/mismatched document, the SDK keeps and serves
+the last valid value for that key, even when it is expired. If no value exists anywhere, the call
+returns `ErrNotReady`.
 
 **Never used**: a document whose environment or project is not this process's — including one that
 names neither, since an unlabelled file would otherwise be accepted everywhere. A staging process
@@ -150,16 +157,15 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 
 | What happens | What the SDK does | What your call sees |
 |---|---|---|
-| Within `CacheTTL` | Serves memory, no HTTP | The cached configuration |
-| `304 Not Modified` | Nothing to parse; the document and ETag stay | The cached configuration |
-| `429` on `/prompts` | Waits out `Retry-After` (else `error.details.retry_after`, else backoff) before contacting the server again | The previous document. No error |
-| `5xx`, timeout, DNS, connection refused | Backs off ×2 from `CacheTTL` up to 5 minutes, keeps the previous document, warns once a minute | The previous document. No error |
-| PromptOn unreachable at startup, disk cache present | Loads it, keeps polling | `Source: disk` |
-| …and no disk cache, bundle present | Loads it, keeps polling | `Source: bundle` |
+| Within the 10-second runtime freshness window | Serves memory, no HTTP | The cached configuration |
+| `304 Not Modified` with a cached value | Marks that key fresh | The cached configuration |
+| `429`, `5xx`, timeout, DNS, connection refused | Records the attempt, waits until that key's 10-second gate opens again, keeps the previous value | The previous document. No error when one exists |
+| PromptOn unreachable at first demand fetch, disk cache present | Uses disk after the 1-second fetch budget | `Source: disk` |
+| …and no disk cache, bundle present | Uses bundle after the 1-second fetch budget | `Source: bundle` |
 | …and nothing anywhere | Use case selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
-| Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps polling | The previous document, or `ErrNotReady` |
+| Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps the previous document | The previous document, or `ErrNotReady` |
 | `UseCase` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
-| Any prompt document outside supported integer `schema_version` 4 through 7 | Refuses it and keeps polling | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
+| Any prompt document outside supported integer `schema_version` 4 through 7 | Refuses it and keeps the previous document | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
 | Use case not in the document | — | `ErrUnknownUseCase` |
 | Use case with no live deployment | — | `ErrUnresolved` |
 | Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |

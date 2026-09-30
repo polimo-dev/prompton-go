@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +39,7 @@ type snapshotServer struct {
 	statusQueue  []int
 	retryAfter   string
 	lastIfNone   string
+	paths        []string
 	logs         [][]map[string]interface{}
 	genRaw       [][]byte
 	genEnvs      []string
@@ -52,6 +55,7 @@ func newSnapshotServer(t *testing.T, body string) *snapshotServer {
 	s.etag = `"sha256-` + hex.EncodeToString(sum[:]) + `"`
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/prompts", s.handleSnapshot)
+	mux.HandleFunc("/api/v1/prompts/", s.handleSnapshot)
 	mux.HandleFunc("/api/v1/logs", s.handleLogs)
 	s.Server = httptest.NewServer(mux)
 	t.Cleanup(s.Close)
@@ -63,6 +67,7 @@ func (s *snapshotServer) handleSnapshot(w http.ResponseWriter, r *http.Request) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.lastIfNone = r.Header.Get("If-None-Match")
+	s.paths = append(s.paths, r.URL.RequestURI())
 	if s.lastIfNone != "" {
 		atomic.AddInt32(&s.conditional, 1)
 	}
@@ -152,6 +157,14 @@ func (s *snapshotServer) snapshotRequests() int { return int(atomic.LoadInt32(&s
 
 func (s *snapshotServer) conditionalRequests() int { return int(atomic.LoadInt32(&s.conditional)) }
 
+func (s *snapshotServer) snapshotPaths() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.paths))
+	copy(out, s.paths)
+	return out
+}
+
 func (s *snapshotServer) queueSnapshotStatuses(retryAfter string, statuses ...int) {
 	s.mu.Lock()
 	s.statusQueue = append(s.statusQueue, statuses...)
@@ -222,20 +235,61 @@ func newTestClient(t *testing.T, cfg Config) *Client {
 
 func waitForRemoteSnapshot(t *testing.T, c *Client) {
 	t.Helper()
-	waitFor(t, 3*time.Second, "the first snapshot fetch", func() bool {
-		return c.UseCaseDocumentInfo().Source == SourceRemote
-	})
+	mustUseCase(t, c, "greeting")
+	if c.UseCaseDocumentInfo().Source != SourceRemote {
+		t.Fatalf("the first demand config fetch did not install a remote document: %+v", c.UseCaseDocumentInfo())
+	}
 }
 
 // ---------------------------------------------------------------------------
 
+func TestDefaultConfigFetchClientDisablesKeepAlives(t *testing.T) {
+	cfgInput := Config{APIKey: "ptn_sdkfixture_test"}
+	cfg, err := cfgInput.withDefaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := cfg.configHTTPClient.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("config client transport = %T", cfg.configHTTPClient.Transport)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("default config fetch transport must disable keep-alives")
+	}
+}
+
+func TestCustomConfigFetchClientIsCalledOnce(t *testing.T) {
+	calls := int32(0)
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		return nil, errors.New("boom")
+	})}
+	c := newTestClient(t, Config{
+		Host:           "http://127.0.0.1:1",
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
+		HTTPClient:     httpClient,
+	})
+	_, _ = c.UseCase(context.Background(), "greeting")
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("SDK should make one config fetch attempt, got %d", got)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
 func TestSnapshotServedFromMemoryWithinTTL(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c := newTestClient(t, Config{
-		Host:        server.URL,
-		APIKey:      "ptn_sdkfixture_test",
-		Environment: "production",
-		CacheTTL:    time.Hour,
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
 	})
 	waitForRemoteSnapshot(t, c)
 
@@ -248,20 +302,210 @@ func TestSnapshotServedFromMemoryWithinTTL(t *testing.T) {
 	if got := server.snapshotRequests(); got != 1 {
 		t.Fatalf("expected exactly 1 snapshot request within the TTL, got %d", got)
 	}
+	if paths := server.snapshotPaths(); len(paths) != 1 || paths[0] != "/api/v1/prompts/greeting?environment=production" {
+		t.Fatalf("runtime config fetch must request only the prompt key, got %v", paths)
+	}
+}
+
+func TestSnapshotMakesNoStartupOrIdleFetch(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	c := newTestClient(t, Config{
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
+	})
+	time.Sleep(40 * time.Millisecond)
+	if got := server.snapshotRequests(); got != 0 {
+		t.Fatalf("startup/idle made %d config fetches", got)
+	}
+	_ = c
+}
+
+func TestSnapshotConcurrentSameKeySharesFetch(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	c := newTestClient(t, Config{
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
+	})
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := c.UseCase(context.Background(), "greeting"); err != nil {
+				t.Errorf("UseCase: %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if got := server.snapshotRequests(); got != 1 {
+		t.Fatalf("same-key concurrent calls should share one fetch, got %d", got)
+	}
+}
+
+func TestSnapshotConcurrentDifferentKeysFetchIndependently(t *testing.T) {
+	otherDoc := strings.ReplaceAll(testSnapshotJSON, `"greeting"`, `"demand_other"`)
+	otherDoc = strings.ReplaceAll(otherDoc, "openai/gpt-4o-mini", "openai/other-model")
+	server := newSnapshotServer(t, testSnapshotJSON)
+	var active int32
+	var maxActive int32
+	server.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := atomic.AddInt32(&active, 1)
+		for {
+			max := atomic.LoadInt32(&maxActive)
+			if current <= max || atomic.CompareAndSwapInt32(&maxActive, max, current) {
+				break
+			}
+		}
+		defer atomic.AddInt32(&active, -1)
+		time.Sleep(100 * time.Millisecond)
+
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/demand_other") {
+			w.Header().Set("ETag", `"other"`)
+			_, _ = w.Write([]byte(otherDoc))
+			return
+		}
+		w.Header().Set("ETag", server.etag)
+		_, _ = w.Write([]byte(testSnapshotJSON))
+	})
+	c := newTestClient(t, Config{
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
+	})
+
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	var greeting, other *UseCase
+	var greetingErr, otherErr error
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		greeting, greetingErr = c.UseCase(context.Background(), "greeting")
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		other, otherErr = c.UseCase(context.Background(), "demand_other")
+	}()
+	close(start)
+	wg.Wait()
+
+	if greetingErr != nil || otherErr != nil {
+		t.Fatalf("UseCase errors: greeting=%v other=%v", greetingErr, otherErr)
+	}
+	if greeting.Model != "openai/gpt-4o-mini" || other.Model != "openai/other-model" {
+		t.Fatalf("models: greeting=%q other=%q", greeting.Model, other.Model)
+	}
+	if got := atomic.LoadInt32(&maxActive); got != 2 {
+		t.Fatalf("different keys should not share a global fetch lock, max active=%d", got)
+	}
+}
+
+func TestPerKeyDiskCacheSurvivesRestartWithIndependentDocuments(t *testing.T) {
+	otherDoc := strings.ReplaceAll(testSnapshotJSON, `"greeting"`, `"demand_other"`)
+	otherDoc = strings.ReplaceAll(otherDoc, "openai/gpt-4o-mini", "openai/other-model")
+	server := newSnapshotServer(t, testSnapshotJSON)
+	server.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.Contains(r.URL.Path, "/demand_other") {
+			w.Header().Set("ETag", `"other"`)
+			_, _ = w.Write([]byte(otherDoc))
+			return
+		}
+		w.Header().Set("ETag", server.etag)
+		_, _ = w.Write([]byte(testSnapshotJSON))
+	})
+	diskPath := filepath.Join(t.TempDir(), "snapshot.json")
+	first := newTestClient(t, Config{
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		Project:        "sdkfixture",
+		DiskCachePath:  diskPath,
+		configCacheTTL: time.Hour,
+	})
+	greeting := mustUseCase(t, first, "greeting")
+	other := mustUseCase(t, first, "demand_other")
+	if greeting.Model != "openai/gpt-4o-mini" || other.Model != "openai/other-model" {
+		t.Fatalf("initial models: greeting=%q other=%q", greeting.Model, other.Model)
+	}
+	_ = first.Close()
+
+	restarted := newTestClient(t, Config{
+		Host:           "http://127.0.0.1:1",
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		Project:        "sdkfixture",
+		DiskCachePath:  diskPath,
+		Timeout:        20 * time.Millisecond,
+		configCacheTTL: time.Hour,
+	})
+	greeting = mustUseCase(t, restarted, "greeting")
+	other = mustUseCase(t, restarted, "demand_other")
+	if greeting.Source != SourceDisk || other.Source != SourceDisk {
+		t.Fatalf("restart sources: greeting=%q other=%q", greeting.Source, other.Source)
+	}
+	if greeting.Model != "openai/gpt-4o-mini" || other.Model != "openai/other-model" {
+		t.Fatalf("restart models: greeting=%q other=%q", greeting.Model, other.Model)
+	}
+}
+
+func TestSnapshotOtherKeyDoesNotMutateFreshConfig(t *testing.T) {
+	otherDoc := strings.ReplaceAll(testSnapshotJSON, `"greeting"`, `"demand_other"`)
+	otherDoc = strings.ReplaceAll(otherDoc, "openai/gpt-4o-mini", "openai/other-model")
+	server := newSnapshotServer(t, testSnapshotJSON)
+	server.Server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/demand_other") {
+			w.Header().Set("ETag", `"other"`)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(otherDoc))
+			return
+		}
+		server.handleSnapshot(w, r)
+	})
+	c := newTestClient(t, Config{
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
+	})
+	greeting := mustUseCase(t, c, "greeting")
+	other := mustUseCase(t, c, "demand_other")
+	greetingAgain := mustUseCase(t, c, "greeting")
+	if greeting.Model != "openai/gpt-4o-mini" || greetingAgain.Model != greeting.Model {
+		t.Fatalf("other key fetch mutated greeting config: first=%q later=%q", greeting.Model, greetingAgain.Model)
+	}
+	if other.Model != "openai/other-model" {
+		t.Fatalf("other key model %q", other.Model)
+	}
 }
 
 func TestSnapshotRepollsWithIfNoneMatch(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c := newTestClient(t, Config{
-		Host:        server.URL,
-		APIKey:      "ptn_sdkfixture_test",
-		Environment: "production",
-		CacheTTL:    20 * time.Millisecond,
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: 20 * time.Millisecond,
 	})
 	waitForRemoteSnapshot(t, c)
-	waitFor(t, 3*time.Second, "a conditional repoll", func() bool {
-		return server.conditionalRequests() >= 2
-	})
+	time.Sleep(25 * time.Millisecond)
+	mustUseCase(t, c, "greeting")
 	// A 304 changes nothing: the document and its ETag stay put.
 	info := c.UseCaseDocumentInfo()
 	if info.ETag == "" || info.Source != SourceRemote || info.Stale {
@@ -274,19 +518,19 @@ func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	clock := newFakeClock()
 	c := newTestClient(t, Config{
-		Host:        server.URL,
-		APIKey:      "ptn_sdkfixture_test",
-		Environment: "production",
-		CacheTTL:    5 * time.Millisecond,
-		Logger:      quietLogger(t),
-		now:         clock.Now,
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: 5 * time.Millisecond,
+		Logger:         quietLogger(t),
+		now:            clock.Now,
 	})
 	waitForRemoteSnapshot(t, c)
 	server.queueSnapshotStatuses("60", 429, 429, 429)
 
-	waitFor(t, 3*time.Second, "the rate-limited poll", func() bool {
-		return c.UseCaseDocumentInfo().Stale
-	})
+	clock.Advance(6 * time.Millisecond)
+	mustUseCase(t, c, "greeting")
 	before := server.snapshotRequests()
 	time.Sleep(80 * time.Millisecond)
 	if after := server.snapshotRequests(); after > before+1 {
@@ -301,20 +545,63 @@ func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
 func TestSnapshotServerErrorKeepsServingPreviousDocument(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c := newTestClient(t, Config{
-		Host:        server.URL,
-		APIKey:      "ptn_sdkfixture_test",
-		Environment: "production",
-		CacheTTL:    5 * time.Millisecond,
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: 5 * time.Millisecond,
 	})
 	waitForRemoteSnapshot(t, c)
 	server.queueSnapshotStatuses("", 500, 500, 500, 503)
 
-	waitFor(t, 3*time.Second, "the failing poll", func() bool {
-		return c.UseCaseDocumentInfo().Stale
-	})
+	time.Sleep(6 * time.Millisecond)
+	mustUseCase(t, c, "greeting")
 	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Model != "openai/gpt-4o-mini" {
 		t.Fatalf("stale document did not resolve: %+v", res)
+	}
+}
+
+func TestSlowCustomConfigFetchFallsBackAfterOneSecondAndCannotLateOverwrite(t *testing.T) {
+	dir := t.TempDir()
+	bundlePath := writeFile(t, dir, "bundle.json", strings.ReplaceAll(testSnapshotJSON, "Say hello to {{ name }}.", "Bundle {{ name }}"))
+	calls := int32(0)
+	httpClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(1200 * time.Millisecond)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}, "ETag": []string{`"late"`}},
+			Body:       io.NopCloser(strings.NewReader(strings.ReplaceAll(testSnapshotJSON, "Say hello to {{ name }}.", "Late {{ name }}"))),
+		}, nil
+	})}
+	c := newTestClient(t, Config{
+		Host:             "http://127.0.0.1:1",
+		APIKey:           "ptn_sdkfixture_test",
+		Environment:      "production",
+		Project:          "sdkfixture",
+		BundlePath:       bundlePath,
+		DisableDiskCache: true,
+		Timeout:          2 * time.Second,
+		configCacheTTL:   time.Hour,
+		HTTPClient:       httpClient,
+	})
+
+	started := time.Now()
+	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if elapsed := time.Since(started); elapsed > 1150*time.Millisecond {
+		t.Fatalf("config fetch did not fall back after 1s budget: %s", elapsed)
+	}
+	if got := res.useCaseResolution.Messages[1].Content; got != "Bundle Ada" {
+		t.Fatalf("initial fallback = %q", got)
+	}
+	time.Sleep(350 * time.Millisecond)
+	res = mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if got := res.useCaseResolution.Messages[1].Content; got != "Bundle Ada" {
+		t.Fatalf("late fetch overwrote cache with %q", got)
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("attempt gate should suppress another fetch, got %d", got)
 	}
 }
 
@@ -324,13 +611,14 @@ func TestSnapshotServerDownFallsBackToDisk(t *testing.T) {
 
 	// A host that refuses connections stands in for PromptOn being unreachable.
 	c := newTestClient(t, Config{
-		Host:          "http://127.0.0.1:1",
-		APIKey:        "ptn_sdkfixture_test",
-		Environment:   "production",
-		Project:       "sdkfixture",
-		DiskCachePath: diskPath,
-		CacheTTL:      time.Hour,
-		Timeout:       100 * time.Millisecond,
+		Host:           "http://127.0.0.1:1",
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		Project:        "sdkfixture",
+		DiskCachePath:  diskPath,
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
+		Timeout:        100 * time.Millisecond,
 	})
 	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Source != SourceDisk {
@@ -423,7 +711,7 @@ func TestCorruptDiskCacheIsIgnored(t *testing.T) {
 	}
 }
 
-func TestSnapshotIsMirroredToDiskAtomically(t *testing.T) {
+func TestExportUseCaseDocumentWritesSnapshotAtomically(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	dir := t.TempDir()
 	diskPath := filepath.Join(dir, "nested", "snapshot.json")
@@ -435,12 +723,9 @@ func TestSnapshotIsMirroredToDiskAtomically(t *testing.T) {
 		CacheTTL:      time.Hour,
 	})
 	waitForRemoteSnapshot(t, c)
-	// The body is written before its sidecar, so a reader that arrives between
-	// the two renames sees a snapshot with no ETag and simply refetches once.
-	waitFor(t, 2*time.Second, "the disk mirror and its sidecar", func() bool {
-		_, err := os.Stat(sidecarPath(diskPath))
-		return err == nil
-	})
+	if err := c.ExportUseCaseDocument(diskPath); err != nil {
+		t.Fatalf("ExportUseCaseDocument: %v", err)
+	}
 
 	body, err := os.ReadFile(diskPath)
 	if err != nil {
@@ -569,10 +854,11 @@ func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 func TestExportUseCaseDocumentProducesALoadableBundle(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c := newTestClient(t, Config{
-		Host:        server.URL,
-		APIKey:      "ptn_sdkfixture_test",
-		Environment: "production",
-		CacheTTL:    time.Hour,
+		Host:           server.URL,
+		APIKey:         "ptn_sdkfixture_test",
+		Environment:    "production",
+		CacheTTL:       time.Hour,
+		configCacheTTL: time.Hour,
 	})
 	waitForRemoteSnapshot(t, c)
 
@@ -632,7 +918,7 @@ func TestSnapshotFetchUsesCurrentPromptEndpointAndDocumentShape(t *testing.T) {
 	server := newSnapshotServer(t, string(suite.Documents["production"]))
 	c := newTestClient(t, Config{
 		Host: server.URL, APIKey: "ptn_sdkfixture_test", Environment: "production",
-		CacheTTL: time.Hour,
+		CacheTTL: time.Hour, configCacheTTL: time.Hour,
 	})
 	waitForRemoteSnapshot(t, c)
 	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))

@@ -26,10 +26,8 @@ type Client struct {
 	store  *snapshotStore
 	buffer *logBuffer
 
-	refreshMu sync.Mutex
-	stateMu   sync.Mutex
-	notBefore time.Time
-	failures  int
+	fetchMu  sync.Mutex
+	inflight map[string]*promptFetch
 
 	pollCh    chan struct{}
 	done      chan struct{}
@@ -50,15 +48,24 @@ type Client struct {
 	resolveCache map[string]*cachedResolve
 }
 
+type promptFetch struct {
+	done     chan struct{}
+	err      error
+	started  time.Time
+	deadline time.Time
+}
+
 type cachedResolve struct {
 	response *resolveResponse
 	at       time.Time
 }
 
+const configFetchBudget = time.Second
+
 // New builds a client and loads whatever configuration is already on hand:
-// memory, then the disk cache, then the bundle. The first remote fetch happens
-// in the background, so New never blocks on the network and the first
-// generation never waits for it.
+// memory, then the disk cache, then the bundle. New never contacts PromptOn;
+// live configuration is fetched on demand for the specific use case being
+// resolved.
 func New(cfg Config) (*Client, error) {
 	resolved, err := cfg.withDefaults()
 	if err != nil {
@@ -66,7 +73,8 @@ func New(cfg Config) (*Client, error) {
 	}
 	c := &Client{
 		cfg:          resolved,
-		store:        &snapshotStore{},
+		store:        &snapshotStore{entries: map[string]*snapshotEntry{}},
+		inflight:     map[string]*promptFetch{},
 		pollCh:       make(chan struct{}, 1),
 		done:         make(chan struct{}),
 		pollDone:     make(chan struct{}),
@@ -81,7 +89,7 @@ func New(cfg Config) (*Client, error) {
 			c.cfg.Logger("no API key configured (PTN_API_KEY): resolving from %s only, and monitoring logs are kept in memory", c.localTierDescription())
 		} else {
 			c.buffer = newLogBuffer(c)
-			go c.pollLoop()
+			close(c.pollDone)
 			return c, nil
 		}
 	}
@@ -92,34 +100,45 @@ func New(cfg Config) (*Client, error) {
 // loadLocal fills the store from the disk cache, then the bundle. A document
 // for another environment or project is never used.
 func (c *Client) loadLocal() {
+	if c.cfg.BundlePath != "" {
+		if entry, err := readSnapshotFile(c.cfg.BundlePath, c.cfg.Environment, c.cfg.Project); err == nil {
+			entry.source = SourceBundle
+			entry.fetchedAt = c.cfg.now()
+			c.store.putDocument(entry)
+		} else if !os.IsNotExist(err) {
+			c.cfg.Logger("ignoring the snapshot bundle at %s: %v", c.cfg.BundlePath, err)
+		}
+	}
 	if !c.cfg.DisableDiskCache && c.cfg.DiskCachePath != "" {
 		if entry, err := readSnapshotFile(c.cfg.DiskCachePath, c.cfg.Environment, c.cfg.Project); err == nil {
 			entry.source = SourceDisk
 			if entry.fetchedAt.IsZero() {
 				entry.fetchedAt = c.cfg.now()
 			}
-			c.store.put(entry)
-			return
+			c.store.putDocument(entry)
 		} else if !os.IsNotExist(err) {
 			// A corrupt or partial file is ignored, not an error: another
 			// process may be renaming a new one into place right now.
 			c.cfg.Logger("ignoring the snapshot disk cache at %s: %v", c.cfg.DiskCachePath, err)
 		}
-	}
-	if c.cfg.BundlePath != "" {
-		if entry, err := readSnapshotFile(c.cfg.BundlePath, c.cfg.Environment, c.cfg.Project); err == nil {
-			entry.source = SourceBundle
-			entry.fetchedAt = c.cfg.now()
-			c.store.put(entry)
-			return
+		if entries, err := readKeySnapshotFiles(c.cfg.DiskCachePath, c.cfg.Environment, c.cfg.Project); err == nil {
+			for _, entry := range entries {
+				entry.source = SourceDisk
+				if entry.fetchedAt.IsZero() {
+					entry.fetchedAt = c.cfg.now()
+				}
+				for key := range entry.snapshot.UseCases {
+					c.store.put(key, entry)
+				}
+			}
 		} else if !os.IsNotExist(err) {
-			c.cfg.Logger("ignoring the snapshot bundle at %s: %v", c.cfg.BundlePath, err)
+			c.cfg.Logger("ignoring the prompt disk cache at %s: %v", keySnapshotDir(c.cfg.DiskCachePath), err)
 		}
 	}
 }
 
 func (c *Client) localTierDescription() string {
-	if entry := c.store.get(); entry != nil {
+	if entry := c.store.any(); entry != nil {
 		return string(entry.source)
 	}
 	if c.cfg.BundlePath != "" || c.cfg.DiskCachePath != "" {
@@ -128,8 +147,8 @@ func (c *Client) localTierDescription() string {
 	return "nothing"
 }
 
-// Close flushes what is queued, best effort, and stops the background refresh.
-// It is safe to call more than once.
+// Close flushes what is queued, best effort. It is safe to call more than
+// once.
 func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		c.closed.Store(true)
@@ -164,10 +183,10 @@ func (c *Client) warnOnce(key, format string, args ...interface{}) {
 // ---------------------------------------------------------------------------
 // resolution
 
-// Resolve answers "what should this call use", from the snapshot in memory.
-// There is no network call on this path: within the cache TTL the document is
-// served as it is, and past it a refresh runs in the background without
-// blocking or failing this call.
+// Resolve answers "what should this call use" from the cached document for
+// this use case. In live mode it first gives that key one bounded chance to
+// refresh when the cache is missing or stale; failures fall back to the last
+// cached value.
 //
 // Pass WithVariables to get the prompt rendered; without it the raw templates
 // come back, which is also what prompt endpoint does.
@@ -183,13 +202,13 @@ func (c *Client) resolve(ctx context.Context, useCase string, opts ...UseCaseOpt
 	if env := buildResolveOptions(opts).Environment; env != "" && env != c.cfg.Environment {
 		return nil, environmentMismatch(useCase, env, c.cfg.Environment)
 	}
-	entry := c.store.get()
+	if c.cfg.Mode == ModeLive && c.cfg.APIKey != "" {
+		_ = c.ensurePromptFresh(ctx, useCase)
+	}
+	entry := c.store.get(useCase)
 	if entry == nil {
 		// Nothing anywhere: this is the one case where resolution fails.
 		return nil, ErrNotReady
-	}
-	if c.isStale(entry) {
-		c.nudgeRefresh()
 	}
 	res, err := resolveSnapshot(entry.snapshot, useCase, opts...)
 	if err != nil {
@@ -203,7 +222,10 @@ func (c *Client) resolve(ctx context.Context, useCase string, opts ...UseCaseOpt
 // PromptNames lists the prompt names the live revision of a use case pins. It
 // is exactly the set of values WithPrompt accepts.
 func (c *Client) PromptNames(useCase string) ([]string, error) {
-	entry := c.store.get()
+	if c.cfg.Mode == ModeLive && c.cfg.APIKey != "" {
+		_ = c.ensurePromptFresh(context.Background(), useCase)
+	}
+	entry := c.store.get(useCase)
 	if entry == nil {
 		return nil, ErrNotReady
 	}
@@ -217,19 +239,129 @@ func (c *Client) isStale(entry *snapshotEntry) bool {
 	if entry.source != SourceRemote {
 		return true
 	}
-	return c.cfg.now().Sub(entry.fetchedAt) >= c.cfg.CacheTTL
+	return c.cfg.now().Sub(entry.fetchedAt) >= c.cfg.configCacheTTL
 }
 
-func (c *Client) nudgeRefresh() {
+func (c *Client) ensurePromptFresh(ctx context.Context, key string) error {
+	now := c.cfg.now()
+	if entry := c.store.get(key); entry != nil && !c.isStale(entry) {
+		return nil
+	}
+	c.fetchMu.Lock()
+	if in := c.inflight[key]; in != nil {
+		c.fetchMu.Unlock()
+		return c.waitForPromptFetch(ctx, in)
+	}
+	if last := c.store.lastAttempt(key); !last.IsZero() && now.Sub(last) < c.cfg.configCacheTTL {
+		c.fetchMu.Unlock()
+		return nil
+	}
+	timeout := c.cfg.Timeout
+	if timeout > configFetchBudget {
+		timeout = configFetchBudget
+	}
+	in := &promptFetch{
+		done:     make(chan struct{}),
+		started:  now,
+		deadline: time.Now().Add(timeout),
+	}
+	c.inflight[key] = in
+	c.store.noteAttempt(key, now)
+	c.fetchMu.Unlock()
+
+	go func() {
+		in.err = c.fetchPrompt(key, in.started, in.deadline, timeout)
+		close(in.done)
+		c.fetchMu.Lock()
+		if c.inflight[key] == in {
+			delete(c.inflight, key)
+		}
+		c.fetchMu.Unlock()
+	}()
+
+	return c.waitForPromptFetch(ctx, in)
+}
+
+func (c *Client) waitForPromptFetch(ctx context.Context, in *promptFetch) error {
+	timer := time.NewTimer(time.Until(in.deadline))
+	defer timer.Stop()
 	select {
-	case c.pollCh <- struct{}{}:
+	case <-in.done:
+		return in.err
+	case <-timer.C:
+		return context.DeadlineExceeded
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *Client) fetchPrompt(key string, started, deadline time.Time, timeout time.Duration) error {
+	reqCtx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	etag := ""
+	if entry := c.store.get(key); entry != nil {
+		etag = entry.etag
+	}
+	resp, err := c.fetchPromptSnapshot(reqCtx, key, c.cfg.Environment, etag)
+	now := c.cfg.now()
+	if err != nil {
+		c.store.markStale(key, now)
+		c.warnOnce("prompt-fetch:"+key, "config fetch for %s failed (%v); serving the cached document if present", key, err)
+		return err
+	}
+
+	switch resp.Status {
+	case 304:
+		if reqCtx.Err() != nil || time.Now().After(deadline) {
+			c.store.markStale(key, now)
+			return context.DeadlineExceeded
+		}
+		if c.store.get(key) == nil {
+			return fmt.Errorf("prompton: config fetch for %s returned 304 without a cached document", key)
+		}
+		c.store.markFresh(key, SourceRemote, now)
+		return nil
+	case 200:
+		snap, parseErr := ParseUseCaseDocument(resp.Body)
+		if parseErr != nil {
+			c.store.markStale(key, now)
+			return parseErr
+		}
+		if guardErr := guardDocument(snap, c.cfg.Environment, c.cfg.Project); guardErr != nil {
+			c.store.markStale(key, now)
+			return guardErr
+		}
+		if _, ok := snap.UseCases[key]; !ok {
+			c.store.markStale(key, now)
+			return fmt.Errorf("prompton: config fetch for %s returned a document without that use case", key)
+		}
+		if reqCtx.Err() != nil || time.Now().After(deadline) {
+			c.store.markStale(key, now)
+			return context.DeadlineExceeded
+		}
+		for _, w := range snap.Warnings {
+			c.warnOnce("snapshot-warning:"+w, "snapshot: %s", w)
+		}
+		c.store.put(key, &snapshotEntry{
+			snapshot:     snap,
+			etag:         resp.ETag,
+			lastModified: resp.LastModified,
+			source:       SourceRemote,
+			fetchedAt:    now,
+			lastAttempt:  started,
+		})
+		c.persistKeyDisk(key, snap, resp, now)
+		return nil
 	default:
+		c.store.markStale(key, now)
+		return fmt.Errorf("prompton: unexpected config fetch status %d", resp.Status)
 	}
 }
 
 // UseCaseDocumentInfo reports which document resolution is reading and how old it is.
 func (c *Client) UseCaseDocumentInfo() UseCaseDocumentInfo {
-	entry := c.store.get()
+	entry := c.store.any()
 	if entry == nil {
 		return UseCaseDocumentInfo{}
 	}
@@ -248,7 +380,7 @@ func (c *Client) UseCaseDocumentInfo() UseCaseDocumentInfo {
 
 // UseCaseDocument returns the document resolution is currently reading, or nil.
 func (c *Client) UseCaseDocument() *UseCaseDocument {
-	entry := c.store.get()
+	entry := c.store.any()
 	if entry == nil {
 		return nil
 	}
@@ -263,7 +395,7 @@ func (c *Client) SetUseCaseDocument(data []byte) error {
 	if err != nil {
 		return err
 	}
-	c.store.put(&snapshotEntry{snapshot: snap, source: SourceManual, fetchedAt: c.cfg.now()})
+	c.store.putDocument(&snapshotEntry{snapshot: snap, source: SourceManual, fetchedAt: c.cfg.now()})
 	return nil
 }
 
@@ -280,7 +412,7 @@ func (c *Client) SetUseCaseDocumentFile(path string) error {
 // how a bundle is built: run it in CI and commit the result so a cold start
 // with no disk cache and no network still resolves.
 func (c *Client) ExportUseCaseDocument(path string) error {
-	entry := c.store.get()
+	entry := c.store.any()
 	if entry == nil {
 		return ErrNotReady
 	}
@@ -296,153 +428,37 @@ func (c *Client) ExportUseCaseDocument(path string) error {
 // ---------------------------------------------------------------------------
 // refresh
 
-// Refresh fetches the snapshot now and waits for the result. Use it in scripts
-// and one-shot jobs; long-running processes get the same thing from the
-// background poll.
+// Refresh is a compatibility no-op. Runtime lookup refreshes only the requested
+// key through UseCase/PromptNames, and bundle tooling should use ExportUseCaseDocument
+// with the document already cached by those key lookups.
 func (c *Client) Refresh(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c.cfg.Mode == ModeOffline {
 		c.loadLocal()
-		return nil
 	}
-	if c.cfg.Mode == ModeTest {
-		return nil
-	}
-	if c.cfg.APIKey == "" {
-		return ErrNoAPIKey
-	}
-	_, err := c.refreshOnce(ctx, true)
-	return err
+	// Runtime refresh is demand-driven through UseCase/PromptNames so a no-arg
+	// live refresh must not bulk-fetch all prompts. ExportUseCaseDocument writes
+	// the currently cached document for explicit bundle tooling.
+	return nil
 }
 
-func (c *Client) pollLoop() {
-	defer close(c.pollDone)
-	timer := time.NewTimer(time.Millisecond)
-	defer timer.Stop()
-	for {
-		select {
-		case <-c.done:
-			return
-		case <-c.pollCh:
-		case <-timer.C:
-		}
-		next, _ := c.refreshOnce(context.Background(), false)
-		resetTimer(timer, next)
+func (c *Client) persistKeyDisk(key string, snap *UseCaseDocument, resp *snapshotResponse, fetchedAt time.Time) {
+	if c.cfg.DisableDiskCache || c.cfg.DiskCachePath == "" {
+		return
 	}
-}
-
-// refreshOnce performs one conditional fetch and returns how long to wait
-// before the next attempt. A refresh never blocks or fails a generation: while
-// it is in flight, and if it fails, the previous document keeps being served.
-func (c *Client) refreshOnce(ctx context.Context, force bool) (time.Duration, error) {
-	c.refreshMu.Lock()
-	defer c.refreshMu.Unlock()
-
-	now := c.cfg.now()
-	if !force {
-		c.stateMu.Lock()
-		wait := c.notBefore.Sub(now)
-		c.stateMu.Unlock()
-		if wait > 0 {
-			return wait, nil
-		}
-	}
-
-	etag := ""
-	if entry := c.store.get(); entry != nil {
-		etag = entry.etag
-	}
-
-	reqCtx, cancel := context.WithTimeout(ctx, c.cfg.Timeout)
-	resp, err := c.fetchSnapshot(reqCtx, c.cfg.Environment, etag)
-	cancel()
-
+	path := keySnapshotPath(c.cfg.DiskCachePath, key)
+	err := writeSnapshotFile(path, snap.Raw, sidecar{
+		ETag:         resp.ETag,
+		LastModified: resp.LastModified,
+		Environment:  snap.Environment,
+		Project:      snap.Project,
+		FetchedAt:    fetchedAt.UTC().Format(time.RFC3339Nano),
+	})
 	if err != nil {
-		return c.refreshFailed(err, resp), err
+		c.warnOnce("prompt-disk-write", "could not write the prompt disk cache at %s: %v", path, err)
 	}
-
-	switch resp.Status {
-	case 304:
-		// The server confirmed the ETag is current, which also promotes a
-		// document that came off disk or out of the bundle.
-		c.store.markFresh(SourceRemote, c.cfg.now())
-		c.refreshSucceeded()
-		return c.cfg.CacheTTL, nil
-	case 200:
-		snap, parseErr := ParseUseCaseDocument(resp.Body)
-		if parseErr != nil {
-			return c.refreshFailed(parseErr, resp), parseErr
-		}
-		if guardErr := guardDocument(snap, c.cfg.Environment, c.cfg.Project); guardErr != nil {
-			return c.refreshFailed(guardErr, resp), guardErr
-		}
-		for _, w := range snap.Warnings {
-			c.warnOnce("snapshot-warning:"+w, "snapshot: %s", w)
-		}
-		fetchedAt := c.cfg.now()
-		c.store.put(&snapshotEntry{
-			snapshot:     snap,
-			etag:         resp.ETag,
-			lastModified: resp.LastModified,
-			source:       SourceRemote,
-			fetchedAt:    fetchedAt,
-		})
-		c.persistDisk(snap, resp, fetchedAt)
-		c.refreshSucceeded()
-		return c.cfg.CacheTTL, nil
-	default:
-		unexpected := fmt.Errorf("prompton: unexpected snapshot status %d", resp.Status)
-		return c.refreshFailed(unexpected, resp), unexpected
-	}
-}
-
-func (c *Client) refreshSucceeded() {
-	c.stateMu.Lock()
-	c.failures = 0
-	c.notBefore = time.Time{}
-	c.stateMu.Unlock()
-}
-
-// refreshFailed keeps serving the previous document and decides when the SDK
-// may talk to the server again. On 429 that is whatever Retry-After said;
-// otherwise the TTL doubled per consecutive failure, up to five minutes.
-func (c *Client) refreshFailed(err error, resp *snapshotResponse) time.Duration {
-	now := c.cfg.now()
-	c.store.markStale(now)
-
-	var retryAfter time.Duration
-	var apiErr *APIError
-	rateLimited := false
-	if errors.As(err, &apiErr) {
-		if apiErr.Status == 429 {
-			rateLimited = true
-		}
-		if apiErr.RetryAfter > 0 {
-			retryAfter = time.Duration(apiErr.RetryAfter * float64(time.Second))
-		}
-	}
-	if retryAfter == 0 && resp != nil && resp.RetryAfter > 0 {
-		retryAfter = resp.RetryAfter
-	}
-
-	c.stateMu.Lock()
-	c.failures++
-	failures := c.failures
-	c.stateMu.Unlock()
-
-	delay := retryAfter
-	if delay <= 0 {
-		delay = backoffDelay(c.cfg.CacheTTL, 5*time.Minute, failures)
-	}
-	c.stateMu.Lock()
-	c.notBefore = now.Add(delay)
-	c.stateMu.Unlock()
-
-	if rateLimited {
-		c.warnOnce("snapshot-429", "snapshot refresh rate limited; waiting %s and serving the cached document", delay.Round(time.Millisecond))
-	} else {
-		c.warnOnce("snapshot-fail", "snapshot refresh failed (%v); retrying in %s and serving the cached document", err, delay.Round(time.Millisecond))
-	}
-	return delay
 }
 
 func (c *Client) persistDisk(snap *UseCaseDocument, resp *snapshotResponse, fetchedAt time.Time) {
