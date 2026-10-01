@@ -387,7 +387,7 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 			if m.Type == "slot" {
 				return fmt.Errorf("prompton: Message slots are not supported; compose conversation history in app code.")
 			}
-			if !m.hasContent || m.rawContent == nil {
+			if !m.hasContent && m.Content != "" {
 				content, err := liquid.Render(m.Content, vars, engine)
 				if err != nil {
 					return templateError(err)

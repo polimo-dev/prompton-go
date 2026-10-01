@@ -489,6 +489,48 @@ func TestTrackLogsAppComposedChatMessages(t *testing.T) {
 	}
 }
 
+func TestTrackPreservesNativeMessageContentPresence(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
+	}
+	res := mustUseCase(t, c, "greeting")
+	var messages []Message
+	if err := json.Unmarshal([]byte(`[
+		{"role":"assistant","type":"native","name":"helper","reasoning":"opaque"},
+		{"role":"assistant","content":null},
+		{"role":"assistant","content":""},
+		{"role":"tool","content":[]}
+	]`), &messages); err != nil {
+		t.Fatalf("messages fixture: %v", err)
+	}
+
+	_, err := res.Track(testContext(t), CallMeta{Messages: messages}, func(ctx context.Context) (*Result, error) {
+		return &Result{Content: "ok"}, nil
+	})
+	if err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+
+	loggedMessages := c.Recorded()[0]["input"].(map[string]interface{})["messages"].([]interface{})
+	absent := loggedMessages[0].(map[string]interface{})
+	if _, ok := absent["content"]; ok {
+		t.Fatalf("absent native content should stay absent: %#v", absent)
+	}
+	if absent["type"] != "native" || absent["name"] != "helper" || absent["reasoning"] != "opaque" {
+		t.Fatalf("native provider fields not preserved: %#v", absent)
+	}
+	if content, ok := loggedMessages[1].(map[string]interface{})["content"]; !ok || content != nil {
+		t.Fatalf("explicit null content not preserved: %#v", loggedMessages[1])
+	}
+	if content := loggedMessages[2].(map[string]interface{})["content"]; content != "" {
+		t.Fatalf("explicit empty string content not preserved: %#v", loggedMessages[2])
+	}
+	if content := loggedMessages[3].(map[string]interface{})["content"].([]interface{}); len(content) != 0 {
+		t.Fatalf("explicit empty array content not preserved: %#v", loggedMessages[3])
+	}
+}
+
 func TestTrackLogsAFailureAndPropagatesIt(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
 	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {

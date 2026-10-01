@@ -226,6 +226,7 @@
             "role": "system"
           },
           {
+            "content": null,
             "role": "assistant",
             "tool_calls": [
               {
