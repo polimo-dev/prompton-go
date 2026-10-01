@@ -12,7 +12,7 @@ import (
 
 // Version is the SDK version, sent as the User-Agent and in every monitoring
 // log's sdk field.
-const Version = "0.5.0"
+const Version = "0.5.1"
 
 // SDKName is the name this SDK reports in the sdk field of a monitoring log.
 const SDKName = "prompton-go"

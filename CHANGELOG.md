@@ -6,6 +6,12 @@ All notable changes to this SDK are recorded here. The format follows
 
 ## Unreleased
 
+## 0.5.1
+
+- Patch source release metadata after the 0.5.0 source tag.
+- Keep the exact cross-SDK message-slot rejection text while satisfying static analysis.
+- Remove dead runtime disk-cache and test helpers reported by CI.
+
 - Retires message-slot expansion. A deployed message with `type: "slot"` now fails with
   `Message slots are not supported; compose conversation history in app code.`
 - Documents the app-owned chat flow: render PromptOn-managed messages, append application chat

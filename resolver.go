@@ -385,6 +385,7 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 		out := make([]Message, 0, len(res.Messages))
 		for _, m := range res.Messages {
 			if m.Type == "slot" {
+				//lint:ignore ST1005 cross-SDK contract requires the exact message, including punctuation.
 				return fmt.Errorf("prompton: Message slots are not supported; compose conversation history in app code.")
 			}
 			if !m.hasContent && m.Content != "" {

@@ -956,7 +956,7 @@
     "language": "elixir",
     "repo": "https://github.com/polimo-dev/prompton-elixir",
     "sdk": "prompton_sdk",
-    "sdk_version": "0.5.0"
+    "sdk_version": "0.5.1"
   },
   "merge_semantics": {
     "null_values": "an override value of null is kept as null, not deleted",

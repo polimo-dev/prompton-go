@@ -155,8 +155,6 @@ func itoaTest(n int) string {
 
 func (s *snapshotServer) snapshotRequests() int { return int(atomic.LoadInt32(&s.requests)) }
 
-func (s *snapshotServer) conditionalRequests() int { return int(atomic.LoadInt32(&s.conditional)) }
-
 func (s *snapshotServer) snapshotPaths() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()

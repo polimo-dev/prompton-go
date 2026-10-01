@@ -461,22 +461,6 @@ func (c *Client) persistKeyDisk(key string, snap *UseCaseDocument, resp *snapsho
 	}
 }
 
-func (c *Client) persistDisk(snap *UseCaseDocument, resp *snapshotResponse, fetchedAt time.Time) {
-	if c.cfg.DisableDiskCache || c.cfg.DiskCachePath == "" {
-		return
-	}
-	err := writeSnapshotFile(c.cfg.DiskCachePath, snap.Raw, sidecar{
-		ETag:         resp.ETag,
-		LastModified: resp.LastModified,
-		Environment:  snap.Environment,
-		Project:      snap.Project,
-		FetchedAt:    fetchedAt.UTC().Format(time.RFC3339Nano),
-	})
-	if err != nil {
-		c.warnOnce("disk-write", "could not write the snapshot disk cache at %s: %v", c.cfg.DiskCachePath, err)
-	}
-}
-
 // ---------------------------------------------------------------------------
 // prompt endpoint
 
