@@ -104,7 +104,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	}
 	if m.hasContent {
 		out["content"] = m.rawContent
-	} else if m.Content != "" || m.Type != "slot" {
+	} else if m.Content != "" || m.Type != "" || m.Role != "" {
 		out["content"] = m.Content
 	}
 	if m.Name != "" {

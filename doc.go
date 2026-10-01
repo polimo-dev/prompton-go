@@ -23,10 +23,13 @@ use-case document it received.
 	if err != nil {
 		return err
 	}
-	messages, err := res.Messages(ctx, map[string]any{"question": question})
+	managed, err := res.Messages(ctx, map[string]any{"question": question})
 	if err != nil {
 		return err
 	}
+	messages := append([]prompton.Message{}, managed...)
+	messages = append(messages, chatHistory...)
+	messages = append(messages, prompton.Message{Role: "user", Content: question})
 
 	out, err := res.Track(ctx, prompton.CallMeta{
 		Variables: map[string]any{"question": question},

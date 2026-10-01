@@ -1,7 +1,6 @@
 package prompton
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -386,16 +385,7 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 		out := make([]Message, 0, len(res.Messages))
 		for _, m := range res.Messages {
 			if m.Type == "slot" {
-				value, ok := vars[m.Name]
-				if !ok {
-					return &MissingVariableError{Variable: m.Name}
-				}
-				spliced, err := messagesFromVariable(value)
-				if err != nil {
-					return err
-				}
-				out = append(out, spliced...)
-				continue
+				return fmt.Errorf("prompton: Message slots are not supported; compose conversation history in app code.")
 			}
 			if !m.hasContent || m.rawContent == nil {
 				content, err := liquid.Render(m.Content, vars, engine)
@@ -427,24 +417,6 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 		res.Rendered = true
 	}
 	return nil
-}
-
-func messagesFromVariable(value interface{}) ([]Message, error) {
-	if value == nil {
-		return nil, fmt.Errorf("prompton: message slot must be an array of provider messages")
-	}
-	if messages, ok := value.([]Message); ok {
-		return append([]Message(nil), messages...), nil
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return nil, fmt.Errorf("prompton: message slot must be an array of provider messages")
-	}
-	var messages []Message
-	if err := decodeJSON(raw, &messages); err != nil {
-		return nil, fmt.Errorf("prompton: message slot must be an array of provider messages")
-	}
-	return messages, nil
 }
 
 func templateError(err *liquid.Error) error {

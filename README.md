@@ -33,6 +33,13 @@ import prompton "github.com/polimo-dev/prompton-go"
 
 Requires Go 1.22 or newer. No runtime dependencies: standard library only.
 
+## Message ownership
+
+PromptOn returns the messages authored in the PromptOn editor, usually the system and policy
+prompt. Your app owns the conversation: append stored chat history and the current user message
+before calling the provider, then pass that final message list to `Track` so monitoring shows what
+the provider actually saw.
+
 ## Quick start
 
 ```go
@@ -47,10 +54,13 @@ res, err := client.UseCase(ctx, "support_reply",
 if err != nil {
 	return err
 }
-messages, err := res.Messages(ctx, map[string]any{"question": question})
+managed, err := res.Messages(ctx, map[string]any{"question": question})
 if err != nil {
 	return err
 }
+messages := append([]prompton.Message{}, managed...)
+messages = append(messages, loadChatHistory(ticketID)...)
+messages = append(messages, prompton.Message{Role: "user", Content: question})
 
 out, err := res.Track(ctx, prompton.CallMeta{
 	Variables: map[string]any{"question": question},

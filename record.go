@@ -418,7 +418,7 @@ func messagesToList(messages []Message) []interface{} {
 		if m.Role != "" {
 			entry["role"] = m.Role
 		}
-		if m.hasContent || m.Content != "" || m.Type != "slot" {
+		if m.hasContent || m.Content != "" || m.Type != "" || m.Role != "" {
 			if content := m.ContentValue(); content != nil {
 				entry["content"] = content
 			}

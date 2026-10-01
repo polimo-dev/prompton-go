@@ -455,6 +455,40 @@ func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 	}
 }
 
+func TestTrackLogsAppComposedChatMessages(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
+	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetUseCaseDocument: %v", err)
+	}
+	res := mustUseCase(t, c, "greeting")
+	managed, err := res.Messages(testContext(t), map[string]interface{}{"name": "Ada"})
+	if err != nil {
+		t.Fatalf("Messages: %v", err)
+	}
+	finalMessages := append([]Message{}, managed...)
+	finalMessages = append(finalMessages,
+		Message{Role: "user", Content: "Earlier app-owned turn"},
+		Message{Role: "user", Content: "What should I do next?"},
+	)
+
+	_, err = res.Track(testContext(t), CallMeta{
+		Variables: map[string]interface{}{"name": "Ada"},
+		Messages:  finalMessages,
+	}, func(ctx context.Context) (*Result, error) {
+		return &Result{Content: "Use the app-composed messages."}, nil
+	})
+	if err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	loggedMessages := c.Recorded()[0]["input"].(map[string]interface{})["messages"].([]interface{})
+	if len(loggedMessages) != len(finalMessages) {
+		t.Fatalf("logged %d messages, want %d", len(loggedMessages), len(finalMessages))
+	}
+	if got := loggedMessages[len(loggedMessages)-1].(map[string]interface{})["content"]; got != "What should I do next?" {
+		t.Fatalf("final user message = %v", got)
+	}
+}
+
 func TestTrackLogsAFailureAndPropagatesIt(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
 	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {

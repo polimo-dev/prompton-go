@@ -75,10 +75,13 @@ func main() {
 	fmt.Printf("model         %s via %s\n", res.Model, res.Provider)
 	fmt.Printf("params        %v\n", res.Params)
 	fmt.Printf("config from   %s\n\n", res.Source)
-	messages, err := res.Messages(ctx, variables)
+	managedMessages, err := res.Messages(ctx, variables)
 	if err != nil {
 		log.Fatalf("messages: %v", err)
 	}
+	messages := append([]prompton.Message{}, managedMessages...)
+	messages = append(messages, appHistory()...)
+	messages = append(messages, prompton.Message{Role: "user", Content: "Please greet Ada."})
 	for _, m := range messages {
 		fmt.Printf("  %-9s %s\n", m.Role, m.Content)
 	}
@@ -111,8 +114,14 @@ func main() {
 	}
 }
 
+func appHistory() []prompton.Message {
+	return []prompton.Message{
+		{Role: "user", Content: "My name is Ada."},
+	}
+}
+
 // fakeProvider stands in for an OpenAI, Anthropic or OpenRouter client. A real
-// one would send res.Model, res.Params, res.ProviderOptions and res.Messages,
+// one would send res.Model, res.Params, res.ProviderOptions and the final messages,
 // with your own provider key.
 func fakeProvider(ctx context.Context, model string, messages []prompton.Message, params map[string]interface{}) (*prompton.Result, error) {
 	_ = ctx
