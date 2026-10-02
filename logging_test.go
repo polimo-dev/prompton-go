@@ -86,6 +86,64 @@ func TestLogFillsIDAndSDK(t *testing.T) {
 	}
 }
 
+func TestClosedTransportGenerationLogsAreSuppressedBeforeRedaction(t *testing.T) {
+	redacted := false
+	c := newTestClient(t, Config{
+		Mode: ModeTest,
+		Redact: func(record map[string]interface{}) map[string]interface{} {
+			redacted = true
+			return record
+		},
+	})
+
+	err := c.Log(LogRecord{
+		UseCase:   "greeting",
+		Model:     "openai/gpt-4o-mini",
+		Status:    StatusError,
+		StartedAt: time.Now().UTC(),
+		Error:     NewCallError(ErrorKindTransport, 0, "failed to send request: %Req.TransportError{reason: :closed}"),
+	})
+	if err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if redacted {
+		t.Fatal("closed transport records must be dropped before the redact hook")
+	}
+	if got := len(c.Recorded()); got != 0 {
+		t.Fatalf("captured %d records, want 0", got)
+	}
+}
+
+func TestOnlyExactClosedTransportGenerationLogsAreSuppressed(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest})
+	now := time.Now().UTC()
+
+	for _, rec := range []LogRecord{
+		{
+			UseCase:   "greeting",
+			Model:     "openai/gpt-4o-mini",
+			Status:    StatusError,
+			StartedAt: now,
+			Error:     NewCallError(ErrorKindTransport, 0, "connection refused"),
+		},
+		{
+			UseCase:   "greeting",
+			Model:     "openai/gpt-4o-mini",
+			Status:    StatusError,
+			StartedAt: now,
+			Error:     NewCallError(ErrorKindApp, 0, "failed to send request: %Req.TransportError{reason: :closed}"),
+		},
+	} {
+		if err := c.Log(rec); err != nil {
+			t.Fatalf("Log: %v", err)
+		}
+	}
+
+	if got := len(c.Recorded()); got != 2 {
+		t.Fatalf("captured %d records, want 2", got)
+	}
+}
+
 func TestBufferFlushesOnSizeTrigger(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c, _ := newLoggingClient(t, server, func(cfg *Config) { cfg.LogFlushSize = 3 })
@@ -937,6 +995,76 @@ func TestLogEventsPostsEventsEnvelopeAndFillsStableFields(t *testing.T) {
 	}
 	if len(envelope["events"].([]interface{})) != 1 || len(envelope["logs"].([]interface{})) != 0 {
 		t.Fatalf("event envelope mismatch: %#v", envelope)
+	}
+}
+
+func TestLogEventsSuppressesClosedTransportCompletionErrors(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	c, _ := newLoggingClient(t, server, nil)
+	events := []TraceEvent{{
+		"trace_id":          "trace-closed",
+		"event_kind":        EventKindCompletion,
+		"status":            EventStatusError,
+		"completion_output": "failed to call LLM: failed to send request: %Req.TransportError{reason: :closed}",
+	}}
+
+	ack, err := c.LogEvents(testContext(t), events)
+	if err != nil {
+		t.Fatalf("LogEvents: %v", err)
+	}
+	if ack.Accepted != 0 || ack.Duplicates != 0 || len(ack.Rejected) != 0 {
+		t.Fatalf("ack %+v, want zero result", ack)
+	}
+	if events[0]["event_id"] == "" || events[0]["observed_at"] == "" {
+		t.Fatalf("validation/fill should still run before filtering: %#v", events[0])
+	}
+	if got := len(server.rawBatches()); got != 0 {
+		t.Fatalf("sent %d requests, want 0", got)
+	}
+}
+
+func TestLogEventsFiltersClosedTransportAndSendsTheRestInOrder(t *testing.T) {
+	server := newSnapshotServer(t, testSnapshotJSON)
+	server.scriptLogs("", []int{202}, []string{`{"accepted":0,"duplicates":0,"rejected":[],"events":{"accepted":2,"duplicates":0,"rejected":[]}}`})
+	c, _ := newLoggingClient(t, server, nil)
+	events := []TraceEvent{
+		{
+			"trace_id":          "trace-a",
+			"event_kind":        EventKindCompletion,
+			"status":            EventStatusError,
+			"completion_output": "ordinary completion failure",
+		},
+		{
+			"trace_id":          "trace-closed",
+			"event_kind":        EventKindCompletion,
+			"status":            EventStatusError,
+			"completion_output": "%Req.TransportError{reason: :closed}",
+		},
+		{
+			"trace_id":          "trace-b",
+			"event_kind":        EventKindCompletion,
+			"status":            EventStatusError,
+			"completion_output": "connection refused",
+		},
+	}
+
+	ack, err := c.LogEvents(testContext(t), events)
+	if err != nil {
+		t.Fatalf("LogEvents: %v", err)
+	}
+	if ack.Accepted != 2 {
+		t.Fatalf("accepted %d, want 2", ack.Accepted)
+	}
+	var envelope map[string]interface{}
+	if err := decodeJSON(server.rawBatches()[0], &envelope); err != nil {
+		t.Fatalf("decode event envelope: %v", err)
+	}
+	sent := envelope["events"].([]interface{})
+	if len(sent) != 2 {
+		t.Fatalf("sent %d events, want 2", len(sent))
+	}
+	if sent[0].(map[string]interface{})["trace_id"] != "trace-a" || sent[1].(map[string]interface{})["trace_id"] != "trace-b" {
+		t.Fatalf("sent events out of order: %#v", sent)
 	}
 }
 

@@ -181,6 +181,7 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |
 | Template needs a variable the call did not send | — | `*MissingVariableError` naming it |
 | `429` or `5xx` on `/logs` | Retries the same batch with the same ids, honouring `Retry-After`, backing off 1s ×2 up to 5 min, then drops and counts | Nothing; `Log` already returned |
+| Routine closed-connection provider errors (`%Req.TransportError{reason: :closed}`) | Drops the generation log or completion trace event before sending, because retry usually resolves it | Nothing; your provider call result/error is unchanged |
 | `413` on `/logs` | Splits the batch in half and resends both halves | Nothing |
 | Any other `4xx` on `/logs` | Drops the batch, counts it, logs once. Never retried | Nothing |
 | A record carrying invalid UTF-8 | Substitutes `U+FFFD` so the batch stays parseable and only that record can be rejected | Nothing |

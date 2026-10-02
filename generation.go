@@ -117,6 +117,9 @@ func (c *Client) Log(rec LogRecord) error {
 	if err := rec.checkStartedAt(c.cfg.now()); err != nil {
 		return err
 	}
+	if isClosedTransportLogRecord(&rec) {
+		return nil
+	}
 
 	environment := rec.Environment
 	if environment == "" {
@@ -210,12 +213,11 @@ func (c *Client) LogEvents(ctx context.Context, events []TraceEvent, environment
 	if len(environment) > 0 && environment[0] != "" {
 		env = environment[0]
 	}
-	prepared := make([]map[string]interface{}, len(events))
+	prepared := make([]map[string]interface{}, 0, len(events))
 	for i := range events {
 		if events[i] == nil {
 			return nil, fmt.Errorf("prompton: trace event %d must be an object", i)
 		}
-		prepared[i] = events[i]
 		if _, ok := events[i]["event_id"].(string); !ok || events[i]["event_id"] == "" {
 			events[i]["event_id"] = NewLogID()
 		}
@@ -234,6 +236,13 @@ func (c *Client) LogEvents(ctx context.Context, events []TraceEvent, environment
 			return nil, fmt.Errorf("prompton: trace event %d has unsupported status", i)
 		}
 		ensureEventSDK(events[i])
+		if isClosedTransportTraceEvent(events[i]) {
+			continue
+		}
+		prepared = append(prepared, events[i])
+	}
+	if len(prepared) == 0 {
+		return &BatchResult{}, nil
 	}
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
@@ -245,6 +254,26 @@ func ensureEventSDK(event map[string]interface{}) {
 	if _, ok := event["sdk"]; !ok {
 		event["sdk"] = map[string]interface{}{"name": SDKName, "version": Version}
 	}
+}
+
+func isClosedTransportLogRecord(rec *LogRecord) bool {
+	if rec.Status != StatusError || rec.Error == nil || rec.Error.Kind != ErrorKindTransport {
+		return false
+	}
+	return isClosedTransportMessage(rec.Error.Message)
+}
+
+func isClosedTransportTraceEvent(event map[string]interface{}) bool {
+	if event["event_kind"] != EventKindCompletion || event["status"] != EventStatusError {
+		return false
+	}
+	message, _ := event["completion_output"].(string)
+	return isClosedTransportMessage(message) || message == "failed to call LLM: failed to send request: %Req.TransportError{reason: :closed}"
+}
+
+func isClosedTransportMessage(message string) bool {
+	return message == "%Req.TransportError{reason: :closed}" ||
+		message == "failed to send request: %Req.TransportError{reason: :closed}"
 }
 
 // policyFor is the use case's payload policy: the one carried by the use-case
