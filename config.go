@@ -223,7 +223,7 @@ func (c *Config) withDefaults() (Config, error) {
 	return out, nil
 }
 
-// baseURL is the runtime API root, host plus /api/v1.
+// baseURL is the PromptOn API root, host plus /api/v1.
 func (c *Config) baseURL() string {
 	host := strings.TrimRight(c.Host, "/")
 	if strings.HasSuffix(host, "/api/v1") {
