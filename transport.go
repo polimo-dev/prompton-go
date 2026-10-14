@@ -108,9 +108,9 @@ func (c *Client) fetchSnapshotPath(ctx context.Context, path, environment, etag 
 }
 
 type resolveRequest struct {
-	UseCase     string
-	Environment string
 	Prompt      string
+	Environment string
+	Template    string
 	// Variables is sent when it is non-nil, empty map included: an empty object
 	// asks the server to render, and the difference between "render with
 	// nothing" and "do not render" is the difference between a 400 naming the
@@ -123,8 +123,8 @@ func (r resolveRequest) body() map[string]interface{} {
 	if r.Environment != "" {
 		out["environment"] = r.Environment
 	}
-	if r.Prompt != "" {
-		out["template"] = r.Prompt
+	if r.Template != "" {
+		out["template"] = r.Template
 	}
 	if r.Variables != nil {
 		out["variables"] = r.Variables
@@ -139,8 +139,8 @@ type resolveResponse struct {
 		ID       string `json:"id"`
 		Revision string `json:"revision"`
 	} `json:"deployment"`
-	Prompt          *string                `json:"template"`
-	PromptNames     []string               `json:"template_names"`
+	Template        *string                `json:"template"`
+	TemplateNames   []string               `json:"template_names"`
 	ModelID         *string                `json:"model_id"`
 	Model           *string                `json:"model"`
 	Provider        *string                `json:"provider"`
@@ -158,32 +158,12 @@ type resolveResponse struct {
 	ETag     string    `json:"etag"`
 }
 
-func (r *resolveResponse) UnmarshalJSON(data []byte) error {
-	type alias resolveResponse
-	var aux struct {
-		*alias
-		LegacyPrompt      *string  `json:"prompt"`
-		LegacyPromptNames []string `json:"prompt_names"`
-	}
-	aux.alias = (*alias)(r)
-	if err := decodeJSON(data, &aux); err != nil {
-		return err
-	}
-	if r.Prompt == nil {
-		r.Prompt = aux.LegacyPrompt
-	}
-	if len(r.PromptNames) == 0 && len(aux.LegacyPromptNames) > 0 {
-		r.PromptNames = aux.LegacyPromptNames
-	}
-	return nil
-}
-
 func (c *Client) postResolve(ctx context.Context, body resolveRequest) (*resolveResponse, error) {
 	if c.cfg.APIKey == "" {
 		return nil, ErrNoAPIKey
 	}
 	payload := canonicalJSON(body.body())
-	path := "/prompts/" + url.PathEscape(body.UseCase) + "/render"
+	path := "/prompts/" + url.PathEscape(body.Prompt) + "/render"
 	req, err := c.newRequest(ctx, http.MethodPost, path, nil, payload)
 	if err != nil {
 		return nil, err
@@ -291,19 +271,11 @@ func (c *Client) postEvents(ctx context.Context, environment string, events []ma
 		}
 		return nil, apiErr
 	}
-	var out struct {
-		Accepted   int             `json:"accepted"`
-		Duplicates int             `json:"duplicates"`
-		Rejected   []RejectedEntry `json:"rejected"`
-		Events     *BatchResult    `json:"events"`
-	}
+	var out BatchResult
 	if err := decodeJSON(data, &out); err != nil {
 		return nil, fmt.Errorf("prompton: invalid /logs response: %w", err)
 	}
-	if out.Events != nil {
-		return out.Events, nil
-	}
-	return &BatchResult{Accepted: out.Accepted, Duplicates: out.Duplicates, Rejected: out.Rejected}, nil
+	return &out, nil
 }
 
 func drainAndClose(resp *http.Response) {

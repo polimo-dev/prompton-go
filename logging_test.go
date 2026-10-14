@@ -49,30 +49,30 @@ func logN(t *testing.T, c *Client, n int) {
 func TestLogRequiresTheFiveMandatoryFields(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest})
 	if err := c.Log(LogRecord{Model: "m", Status: StatusOK, StartedAt: time.Now()}); err == nil {
-		t.Fatal("a record with no use_case must be rejected")
+		t.Fatal("a record with no prompt must be rejected")
 	}
-	if err := c.Log(LogRecord{UseCase: "u", Status: StatusOK, StartedAt: time.Now()}); err == nil {
+	if err := c.Log(LogRecord{Prompt: "u", Status: StatusOK, StartedAt: time.Now()}); err == nil {
 		t.Fatal("a record with no model must be rejected")
 	}
-	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: "weird", StartedAt: time.Now()}); err == nil {
+	if err := c.Log(LogRecord{Prompt: "u", Model: "m", Status: "weird", StartedAt: time.Now()}); err == nil {
 		t.Fatal("a record with an unknown status must be rejected")
 	}
 	// An unset started_at defaults to now; one outside the window the server
 	// accepts is refused here rather than coming back in `rejected`.
-	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK}); err != nil {
+	if err := c.Log(LogRecord{Prompt: "u", Model: "m", Status: StatusOK}); err != nil {
 		t.Fatalf("an unset started_at should default to now: %v", err)
 	}
-	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(-8 * 24 * time.Hour)}); err == nil {
+	if err := c.Log(LogRecord{Prompt: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(-8 * 24 * time.Hour)}); err == nil {
 		t.Fatal("a started_at more than 7 days in the past must be rejected")
 	}
-	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(time.Hour)}); err == nil {
+	if err := c.Log(LogRecord{Prompt: "u", Model: "m", Status: StatusOK, StartedAt: time.Now().Add(time.Hour)}); err == nil {
 		t.Fatal("a started_at more than 5 minutes in the future must be rejected")
 	}
 }
 
 func TestLogFillsIDAndSDK(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest})
-	if err := c.Log(LogRecord{UseCase: "u", Model: "m", Status: StatusOK, StartedAt: time.Now()}); err != nil {
+	if err := c.Log(LogRecord{Prompt: "u", Model: "m", Status: StatusOK, StartedAt: time.Now()}); err != nil {
 		t.Fatalf("log: %v", err)
 	}
 	rec := c.Recorded()[0]
@@ -89,7 +89,7 @@ func TestLogFillsIDAndSDK(t *testing.T) {
 func TestLogOmitsRetiredResourceReferences(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest})
 	if err := c.Log(LogRecord{
-		UseCase:             "greeting",
+		Prompt:              "greeting",
 		Model:               "openai/gpt-4o-mini",
 		Status:              StatusOK,
 		StartedAt:           time.Now(),
@@ -174,7 +174,7 @@ func TestClosedTransportGenerationLogsAreSuppressedBeforeRedaction(t *testing.T)
 	})
 
 	err := c.Log(LogRecord{
-		UseCase:   "greeting",
+		Prompt:    "greeting",
 		Model:     "openai/gpt-4o-mini",
 		Status:    StatusError,
 		StartedAt: time.Now().UTC(),
@@ -197,14 +197,14 @@ func TestOnlyExactClosedTransportGenerationLogsAreSuppressed(t *testing.T) {
 
 	for _, rec := range []LogRecord{
 		{
-			UseCase:   "greeting",
+			Prompt:    "greeting",
 			Model:     "openai/gpt-4o-mini",
 			Status:    StatusError,
 			StartedAt: now,
 			Error:     NewCallError(ErrorKindTransport, 0, "connection refused"),
 		},
 		{
-			UseCase:   "greeting",
+			Prompt:    "greeting",
 			Model:     "openai/gpt-4o-mini",
 			Status:    StatusError,
 			StartedAt: now,
@@ -495,14 +495,14 @@ func TestHashEndUserReplacesTheReference(t *testing.T) {
 
 func TestTrackLogsASuccess(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 
 	out, err := res.Track(testContext(t), CallMeta{
 		Variables: map[string]interface{}{"name": "Ada"},
-		Messages:  res.useCaseResolution.Messages,
+		Messages:  res.promptResolution.Messages,
 		TraceID:   "job:1",
 	}, func(ctx context.Context) (*Result, error) {
 		return &Result{
@@ -572,16 +572,16 @@ func TestResultAdaptersNormalizeProviderResponses(t *testing.T) {
 
 func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	useCase := mustUseCase(t, c, "greeting")
-	messages, err := useCase.Messages(testContext(t), map[string]interface{}{"name": "Ada"})
+	prompt := mustPrompt(t, c, "greeting")
+	messages, err := prompt.Messages(testContext(t), map[string]interface{}{"name": "Ada"})
 	if err != nil {
 		t.Fatalf("Messages: %v", err)
 	}
 
-	_, err = useCase.Track(testContext(t), CallMeta{Messages: messages}, func(ctx context.Context) (*Result, error) {
+	_, err = prompt.Track(testContext(t), CallMeta{Messages: messages}, func(ctx context.Context) (*Result, error) {
 		return &Result{Content: "안녕"}, nil
 	})
 	if err != nil {
@@ -605,10 +605,10 @@ func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 
 func TestTrackLogsAppComposedChatMessages(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 	managed, err := res.Messages(testContext(t), map[string]interface{}{"name": "Ada"})
 	if err != nil {
 		t.Fatalf("Messages: %v", err)
@@ -639,10 +639,10 @@ func TestTrackLogsAppComposedChatMessages(t *testing.T) {
 
 func TestTrackPreservesNativeMessageContentPresence(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 	var messages []Message
 	if err := json.Unmarshal([]byte(`[
 		{"role":"assistant","type":"native","name":"helper","reasoning":"opaque"},
@@ -681,10 +681,10 @@ func TestTrackPreservesNativeMessageContentPresence(t *testing.T) {
 
 func TestTrackLogsAFailureAndPropagatesIt(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 
 	sentinel := NewCallError(ErrorKindRateLimited, 429, "slow down")
 	_, err := res.Track(testContext(t), CallMeta{}, func(ctx context.Context) (*Result, error) {
@@ -705,10 +705,10 @@ func TestTrackLogsAFailureAndPropagatesIt(t *testing.T) {
 
 func TestTrackKeepsUsageOnAParseFailure(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 
 	_, err := res.Track(testContext(t), CallMeta{}, func(ctx context.Context) (*Result, error) {
 		outcome := &Result{
@@ -736,10 +736,10 @@ func TestTrackKeepsUsageOnAParseFailure(t *testing.T) {
 
 func TestTrackLogsAPanicAndRepanics(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 
 	func() {
 		defer func() {
@@ -1043,7 +1043,7 @@ func assertLaneBytes(t *testing.T, b *logBuffer) {
 
 func TestLogEventsPostsEventsEnvelopeAndFillsStableFields(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptLogs("", []int{202, 202}, []string{`{"accepted":0,"duplicates":0,"rejected":[],"events":{"accepted":1,"duplicates":0,"rejected":[]}}`, `{"accepted":0,"duplicates":0,"rejected":[],"events":{"accepted":1,"duplicates":0,"rejected":[]}}`})
+	server.scriptLogs("", []int{202, 202}, []string{`{"accepted":1,"duplicates":0,"rejected":[]}`, `{"accepted":1,"duplicates":0,"rejected":[]}`})
 	c, _ := newLoggingClient(t, server, nil)
 	events := []TraceEvent{{
 		"trace_id":     "trace-1",
@@ -1115,7 +1115,7 @@ func TestLogEventsSuppressesClosedTransportCompletionErrors(t *testing.T) {
 
 func TestLogEventsFiltersClosedTransportAndSendsTheRestInOrder(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
-	server.scriptLogs("", []int{202}, []string{`{"accepted":0,"duplicates":0,"rejected":[],"events":{"accepted":2,"duplicates":0,"rejected":[]}}`})
+	server.scriptLogs("", []int{202}, []string{`{"accepted":2,"duplicates":0,"rejected":[]}`})
 	c, _ := newLoggingClient(t, server, nil)
 	events := []TraceEvent{
 		{

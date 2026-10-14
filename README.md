@@ -3,7 +3,7 @@
 The official Go SDK for [PromptOn](https://app.prompton.ai), the control plane for an app's LLM
 prompts.
 
-PromptOn holds, per use case and per environment, one **pin**: a prompt version for each prompt
+PromptOn holds, per prompt and per environment, one **pin**: a prompt version for each prompt
 name, one model, and its parameters. Your app fetches that configuration, renders the prompt with
 this call's variables, and **calls the model provider itself** — with its own key and its own HTTP
 client. PromptOn is never in the request path, never sees your provider key, and cannot slow your
@@ -12,7 +12,7 @@ model call down. What it gets back is **monitoring logs**: one record per model 
 If PromptOn is unreachable, your app keeps running on the last configuration it received.
 
 ```
-UseCase ──▶ {Model, Params, ProviderOptions, DeploymentRevision, Prompt, …}
+Prompt ──▶ {Model, Params, ProviderOptions, DeploymentRevision, Prompt, …}
    │
    ├── Messages/Text ──▶ your provider client, your key
    │
@@ -49,7 +49,7 @@ if err != nil {
 }
 defer client.Close()
 
-res, err := client.UseCase(ctx, "support_reply",
+res, err := client.Prompt(ctx, "support_reply",
 	prompton.WithVariables(map[string]any{"question": question}))
 if err != nil {
 	return err
@@ -90,11 +90,11 @@ out, err := res.Track(ctx, prompton.CallMeta{
 Two calls instead of one, when the prompt and the render happen at different times:
 
 ```go
-res, _ := client.UseCase(ctx, "support_reply")            // raw templates
+res, _ := client.Prompt(ctx, "support_reply")            // raw templates
 messages, _ := res.Messages(ctx, map[string]any{"question": question})
 ```
 
-For a text use case use `res.Text(ctx, vars)`; an embedding use case selects the model only and
+For a text prompt use `res.Text(ctx, vars)`; an embedding prompt selects the model only and
 has neither messages nor text.
 
 ## Configuration
@@ -116,7 +116,7 @@ Precedence is **explicit option → environment variable → default**.
 | `BundlePath` | — | — | A prompt document JSON file shipped inside the app, used when memory and disk are empty |
 | `HashEndUser` | — | `false` | Sends `sha256(end_user_ref)` instead of the raw reference |
 | `Redact` | — | — | `func(map[string]any) map[string]any`, applied to every record last |
-| `PayloadDefaults` | — | `full`, rate `1.0`, 256 KiB | Policy for a use case whose document carries none |
+| `PayloadDefaults` | — | `full`, rate `1.0`, 256 KiB | Policy for a prompt whose document carries none |
 | `LogFlushInterval` / `LogFlushSize` / `LogFlushBytes` | — | `2s` / `100` / `1 MB` | Monitoring-log flush triggers |
 | `LogMaxBuffer` | — | `10000` | Queue bound; above it the oldest records are dropped and counted |
 | `LogMaxAttempts` | — | `8` | How often one batch is retried before it is dropped and counted |
@@ -136,10 +136,10 @@ partial file is ignored rather than raised.
 
 **Load order at startup**: memory → disk → bundle. `New` never contacts PromptOn and starts no
 config poller. A process that is alive but not preparing an LLM call sends no config-fetch traffic.
-`UseCase.Source` records the tier used for the call, and it travels with every monitoring log as
+`Prompt.Source` records the tier used for the call, and it travels with every monitoring log as
 `source`, so a stale deployment is visible in the data.
 
-**Demand fetch.** `UseCase(ctx, key)` is the runtime config boundary. If that key has a fresh
+**Demand fetch.** `Prompt(ctx, key)` is the runtime config boundary. If that key has a fresh
 cached document, the SDK serves memory with no HTTP call. If it is missing or older than
 the fixed 10-second runtime freshness window, the SDK makes one conditional request to
 `GET /api/v1/prompts/{key}?environment=...` with that key's ETag. A successful `200` replaces only
@@ -155,10 +155,10 @@ returns `ErrNotReady`.
 **Never used**: a document whose environment or project is not this process's — including one that
 names neither, since an unlabelled file would otherwise be accepted everywhere. A staging process
 must not boot on a production bundle, and the file records both. For the same reason a local
-`UseCase` refuses `WithEnvironment` for anything but the client's own environment: one process
-holds one environment's document. Use `RemoteUseCase`, or a second client, to read another.
+`Prompt` refuses `WithEnvironment` for anything but the client's own environment: one process
+holds one environment's document. Use `RenderPrompt`, or a second client, to read another.
 
-**Building a bundle.** `client.ExportUseCaseDocument("priv/prompton/prompts.production.json")` writes the
+**Building a bundle.** `client.ExportPromptDocument("priv/prompton/prompts.production.json")` writes the
 document and its sidecar. Run it in CI on every build and commit the result; one file per
 environment, and load the one matching the process. `client.Refresh(ctx)` is the synchronous
 "fetch once now" for scripts and one-shot jobs.
@@ -172,12 +172,12 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | `429`, `5xx`, timeout, DNS, connection refused | Records the attempt, waits until that key's 10-second gate opens again, keeps the previous value | The previous document. No error when one exists |
 | PromptOn unreachable at first demand fetch, disk cache present | Uses disk after the 1-second fetch budget | `Source: disk` |
 | …and no disk cache, bundle present | Uses bundle after the 1-second fetch budget | `Source: bundle` |
-| …and nothing anywhere | Use case selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
-| Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps the previous document | The previous document, or `ErrNotReady` |
-| `UseCase` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
+| …and nothing anywhere | Prompt selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
+| Prompt document for the wrong environment or project, or naming neither | Refuses it and keeps the previous document | The previous document, or `ErrNotReady` |
+| `Prompt` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
 | Any prompt document outside exact integer `schema_version: 1` | Refuses it and keeps the previous document | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
-| Use case not in the document | — | `ErrUnknownUseCase` |
-| Use case with no live deployment | — | `ErrUnresolved` |
+| Prompt not in the document | — | `ErrUnknownPrompt` |
+| Prompt with no live deployment | — | `ErrUnresolved` |
 | Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |
 | Template needs a variable the call did not send | — | `*MissingVariableError` naming it |
 | `429` or `5xx` on `/logs` | Retries the same batch with the same ids, honouring `Retry-After`, backing off 1s ×2 up to 5 min, then drops and counts | Nothing; `Log` already returned |
@@ -188,7 +188,7 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | Log queue full | Drops the oldest and counts it — including the in-memory capture of test, offline and no-API-key clients | Nothing |
 | `Log` after `Close` | Counts it as `DroppedAfterClose` | `ErrClosed`, as `Flush` already returned |
 
-`ErrUnresolved` and `ErrUnknownPrompt` are bugs in the deployment or in the call — **never** a
+`ErrUnresolved` and `ErrUnknownTemplate` are bugs in the deployment or in the call — **never** a
 signal to reach for a copy of the old prompt string. Fail that call loudly instead.
 
 `client.BufferStats()` reports what was sent and every category of drop.
@@ -198,8 +198,8 @@ signal to reach for a copy of the old prompt string. Fail that call loudly inste
 Three entry points, none of which blocks the provider call:
 
 - **`client.Log(record)`** queues one record you built yourself and returns. It requires
-  `UseCase`, `Model`, `Status` and `StartedAt`, and fills in the `ID` (a UUIDv7), the `SDK` name and
-  version, and — when you pass `UseCaseEvidence` — the deployment, prompt, model and
+  `Prompt`, `Model`, `Status` and `StartedAt`, and fills in the `ID` (a UUIDv7), the `SDK` name and
+  version, and — when you pass `PromptEvidence` — the deployment, prompt, model and
   `source` fields. It returns an error only for a record it refuses outright and for
   `ErrClosed` after `Close`; a full queue or a server that refuses the batch is counted in
   `BufferStats`, never handed back to the caller.
@@ -220,12 +220,12 @@ counted.
 | Field | Type | Notes |
 |---|---|---|
 | `ID` | string | UUIDv7, the idempotency key. Filled in when empty |
-| `UseCase` | string | Required |
+| `Prompt` | string | Required |
 | `Model` | string | Required — the provider model string that was requested |
 | `Status` | string | Required — `StatusOK` or `StatusError` |
 | `StartedAt` | time.Time | Required. Defaults to now; rejected if more than 5 minutes ahead or 7 days behind |
 | `Kind` | Kind | `chat` (default), `decision`, `text`, `embedding` |
-| `UseCaseEvidence` | *UseCase | Fills every use-case evidence field below that you left empty |
+| `PromptEvidence` | *Prompt | Fills every prompt evidence field below that you left empty |
 	| `DeploymentRevision`, `Prompt`, `PromptVersionNumber` | | Readable evidence for the pin that produced the call |
 	| `DeploymentID`, `PromptVersionID`, `ModelID` | | Deprecated local response/cache evidence; nil/empty for schema1 readable configs and not emitted in monitoring log requests |
 | `Source` | Source | `remote`, `disk`, `bundle`, `manual` |
@@ -248,7 +248,7 @@ And do not log secrets — no provider keys, no `PTN_API_KEY`, no user PII beyon
 
 ### Payload policy
 
-Before a record is queued the SDK applies the use case's `payload_policy` from the document, so raw
+Before a record is queued the SDK applies the prompt's `payload_policy` from the document, so raw
 text never travels further than the policy allows. `mode: none` drops the input and output;
 `mode: hash` replaces them with a `{sha256, bytes, hashed}` digest the server understands;
 `mode: full` truncates to the same limits the server re-checks, keeping the head and the tail and
@@ -261,9 +261,9 @@ the same decision — and errors and `length` truncations are always kept.
 
 ```go
 client, _ := prompton.New(prompton.Config{Mode: prompton.ModeTest})
-_ = client.SetUseCaseDocument(useCaseDocumentJSON)   // or SetUseCaseDocumentFile
+_ = client.SetPromptDocument(promptDocumentJSON)   // or SetPromptDocumentFile
 
-res, _ := client.UseCase(ctx, "support_reply", prompton.WithVariables(vars))
+res, _ := client.Prompt(ctx, "support_reply", prompton.WithVariables(vars))
 // … exercise your code …
 
 for _, rec := range client.Recorded() {
@@ -283,7 +283,7 @@ cannot grow without end.
 ## Conformance
 
 `testdata/conformance/` is the cross-language contract every PromptOn SDK reproduces: prompt
-rendering, use-case selection, monitoring-log truncation, `stop_kind` normalisation and golden records.
+rendering, prompt selection, monitoring-log truncation, `stop_kind` normalisation and golden records.
 `go test ./...` runs every case. When two SDKs disagree about how a prompt renders or how a log is
 truncated, an app that talks to PromptOn from two languages gets two different answers; these files
 are what prevent that.

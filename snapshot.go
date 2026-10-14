@@ -7,17 +7,17 @@ import (
 	"strings"
 )
 
-// SchemaVersion is the newest use-case document schema this SDK reads. A deployment revision is
+// SchemaVersion is the newest prompt document schema this SDK reads. A deployment revision is
 // a pin — one model plus one pinned prompt version per prompt name — not a
 // router: schema 8 replaces public resource UUID references with readable keys,
 // and schema 9 is the flat single-prompt endpoint shape normalized at decode.
 const SchemaVersion = 1
 
-// Kind is what a use case calls: a chat completion, a text completion, or an
+// Kind is what a prompt calls: a chat completion, a text completion, or an
 // embedding.
 type Kind string
 
-// The three use case kinds.
+// The prompt kinds.
 const (
 	KindChat      Kind = "chat"
 	KindDecision  Kind = "decision"
@@ -122,7 +122,7 @@ func (m Message) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// Variable is one entry of a use case's declared variables.
+// Variable is one entry of a prompt's declared variables.
 type Variable struct {
 	Name        string      `json:"name"`
 	Type        string      `json:"type"`
@@ -147,12 +147,12 @@ const (
 	PayloadNone = "none"
 )
 
-// DefaultMaxBytes is the payload budget a use case gets when its policy does
+// DefaultMaxBytes is the payload budget a prompt gets when its policy does
 // not name one.
 const DefaultMaxBytes = 262144
 
-// UseCase is one LLM call site.
-type DocumentUseCase struct {
+// Prompt is one LLM call site.
+type DocumentPrompt struct {
 	ID            string                 `json:"id"`
 	Key           string                 `json:"-"`
 	Kind          Kind                   `json:"kind"`
@@ -161,10 +161,10 @@ type DocumentUseCase struct {
 	PayloadPolicy *PayloadPolicy         `json:"payload_policy"`
 }
 
-// Deployment is the live pin for one use case in one environment.
+// Deployment is the live pin for one prompt in one environment.
 type Deployment struct {
 	ID              string                 `json:"id"`
-	UseCase         string                 `json:"-"`
+	Prompt          string                 `json:"-"`
 	Revision        string                 `json:"revision"`
 	ModelID         string                 `json:"model_id"`
 	Provider        string                 `json:"provider"`
@@ -205,13 +205,13 @@ type Model struct {
 	Status          string                 `json:"status"`
 }
 
-// UseCaseDocument is a decoded schema1 prompt detail or offline bundle for one
+// PromptDocument is a decoded schema1 prompt detail or offline bundle for one
 // environment.
-type UseCaseDocument struct {
+type PromptDocument struct {
 	SchemaVersion  int
 	Project        string
 	Environment    string
-	UseCases       map[string]*DocumentUseCase
+	Prompts        map[string]*DocumentPrompt
 	Deployments    map[string]*Deployment
 	PromptVersions map[string]*PromptVersion
 	Models         map[string]*Model
@@ -224,23 +224,23 @@ type UseCaseDocument struct {
 	Warnings []string
 }
 
-type rawUseCaseDocument struct {
-	SchemaVersion  *int                        `json:"schema_version"`
-	Project        string                      `json:"project"`
-	Environment    string                      `json:"environment"`
-	Prompts        map[string]*DocumentUseCase `json:"prompts"`
-	Deployments    map[string]*Deployment      `json:"deployments"`
-	PromptVersions map[string]*PromptVersion   `json:"prompt_versions"`
-	Models         map[string]*Model           `json:"models"`
-	Prompt         *singlePrompt               `json:"prompt"`
-	Deployment     *Deployment                 `json:"deployment"`
-	PromptVersion  *PromptVersion              `json:"prompt_version"`
-	Model          *Model                      `json:"model"`
+type rawPromptDocument struct {
+	SchemaVersion  *int                       `json:"schema_version"`
+	Project        string                     `json:"project"`
+	Environment    string                     `json:"environment"`
+	Prompts        map[string]*DocumentPrompt `json:"prompts"`
+	Deployments    map[string]*Deployment     `json:"deployments"`
+	PromptVersions map[string]*PromptVersion  `json:"prompt_versions"`
+	Models         map[string]*Model          `json:"models"`
+	Prompt         *singlePrompt              `json:"prompt"`
+	Deployment     *Deployment                `json:"deployment"`
+	PromptVersion  *PromptVersion             `json:"prompt_version"`
+	Model          *Model                     `json:"model"`
 }
 
 type singlePrompt struct {
 	Key string `json:"key"`
-	*DocumentUseCase
+	*DocumentPrompt
 }
 
 // UnsupportedSchemaError is returned for any document whose schema_version is
@@ -252,19 +252,19 @@ type UnsupportedSchemaError struct {
 
 func (e *UnsupportedSchemaError) Error() string {
 	if e.Missing {
-		return fmt.Sprintf("prompton: missing use-case document schema_version (this SDK reads v%d)", SchemaVersion)
+		return fmt.Sprintf("prompton: missing prompt document schema_version (this SDK reads v%d)", SchemaVersion)
 	}
-	return fmt.Sprintf("prompton: unsupported use-case document schema_version %d (this SDK reads v%d)", e.Version, SchemaVersion)
+	return fmt.Sprintf("prompton: unsupported prompt document schema_version %d (this SDK reads v%d)", e.Version, SchemaVersion)
 }
 
-// ParseUseCaseDocument decodes a schema1 prompt detail or offline aggregate bundle.
-func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
+// ParsePromptDocument decodes a schema1 prompt detail or offline aggregate bundle.
+func ParsePromptDocument(data []byte) (*PromptDocument, error) {
 	if hasPromptInputSchema(data) {
 		return nil, fmt.Errorf("prompton: prompt metadata must use variables, not input_schema")
 	}
-	var raw rawUseCaseDocument
+	var raw rawPromptDocument
 	if err := decodeJSON(data, &raw); err != nil {
-		return nil, fmt.Errorf("prompton: invalid use-case document JSON: %w", err)
+		return nil, fmt.Errorf("prompton: invalid prompt document JSON: %w", err)
 	}
 	if raw.SchemaVersion == nil {
 		return nil, &UnsupportedSchemaError{Missing: true}
@@ -289,11 +289,11 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		return nil, fmt.Errorf("prompton: schema1 aggregate bundle must include models object")
 	}
 
-	snap := &UseCaseDocument{
+	snap := &PromptDocument{
 		SchemaVersion:  version,
 		Project:        raw.Project,
 		Environment:    raw.Environment,
-		UseCases:       map[string]*DocumentUseCase{},
+		Prompts:        map[string]*DocumentPrompt{},
 		Deployments:    map[string]*Deployment{},
 		PromptVersions: map[string]*PromptVersion{},
 		Models:         map[string]*Model{},
@@ -310,7 +310,7 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if uc.DefaultParams == nil {
 			uc.DefaultParams = map[string]interface{}{}
 		}
-		snap.UseCases[key] = uc
+		snap.Prompts[key] = uc
 	}
 	for key, dep := range raw.Deployments {
 		if dep == nil {
@@ -328,7 +328,7 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if dep.Provider == "" || dep.Model == "" {
 			return nil, fmt.Errorf("prompton: schema1 deployment %s needs provider and model", key)
 		}
-		dep.UseCase = key
+		dep.Prompt = key
 		if dep.Params == nil {
 			dep.Params = map[string]interface{}{}
 		}
@@ -339,9 +339,9 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 			dep.ModelID = dep.Provider + ":" + dep.Model
 		}
 		if dep.PromptVersion != nil {
-			dep.PromptPins = map[string]string{DefaultPrompt: fmt.Sprintf("%s@%d", key, *dep.PromptVersion)}
+			dep.TemplatePins = map[string]string{DefaultTemplate: fmt.Sprintf("%s@%d", key, *dep.PromptVersion)}
 		} else {
-			dep.PromptPins = map[string]string{}
+			dep.TemplatePins = map[string]string{}
 		}
 		snap.Deployments[key] = dep
 	}
@@ -406,7 +406,7 @@ func hasPromptInputSchema(data []byte) bool {
 	return false
 }
 
-func normalizeSchema1Document(data []byte, raw *rawUseCaseDocument) error {
+func normalizeSchema1Document(data []byte, raw *rawPromptDocument) error {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(data, &top); err == nil {
 		if prompts, ok := top["prompts"]; ok {
@@ -422,7 +422,7 @@ func normalizeSchema1Document(data []byte, raw *rawUseCaseDocument) error {
 	if hasSchema1BulkCollection(data) {
 		return fmt.Errorf("prompton: schema1 prompt detail must not include aggregate collections")
 	}
-	if raw.Prompt == nil || raw.Prompt.DocumentUseCase == nil {
+	if raw.Prompt == nil || raw.Prompt.DocumentPrompt == nil {
 		return fmt.Errorf("prompton: schema1 prompt must be an object")
 	}
 	if raw.Deployment == nil {
@@ -456,7 +456,7 @@ func normalizeSchema1Document(data []byte, raw *rawUseCaseDocument) error {
 	raw.PromptVersions = map[string]*PromptVersion{
 		fmt.Sprintf("%s@%d", key, raw.PromptVersion.Number): raw.PromptVersion,
 	}
-	raw.Prompts = map[string]*DocumentUseCase{key: raw.Prompt.DocumentUseCase}
+	raw.Prompts = map[string]*DocumentPrompt{key: raw.Prompt.DocumentPrompt}
 	raw.Deployments = map[string]*Deployment{key: raw.Deployment}
 	raw.Models = map[string]*Model{raw.Model.Provider + ":" + raw.Model.Model: raw.Model}
 	return nil
@@ -467,7 +467,7 @@ func hasSchema1BulkCollection(data []byte) bool {
 	if err := json.Unmarshal(data, &fields); err != nil {
 		return false
 	}
-	for _, key := range []string{"use_cases", "prompts", "deployments", "prompt_versions", "models"} {
+	for _, key := range []string{"prompts", "prompts", "deployments", "prompt_versions", "models"} {
 		if _, ok := fields[key]; ok {
 			return true
 		}
@@ -494,12 +494,12 @@ func validateSchema1ModelKey(key string, m *Model) error {
 	return nil
 }
 
-func validateSchema1References(snap *UseCaseDocument) error {
+func validateSchema1References(snap *PromptDocument) error {
 	for key, dep := range snap.Deployments {
 		if dep == nil {
 			return fmt.Errorf("prompton: schema1 deployment %s must be an object", key)
 		}
-		uc := snap.UseCases[key]
+		uc := snap.Prompts[key]
 		if uc == nil {
 			return fmt.Errorf("prompton: schema1 deployment %s references unknown prompt", key)
 		}
@@ -509,14 +509,14 @@ func validateSchema1References(snap *UseCaseDocument) error {
 		if uc.Kind == KindEmbedding {
 			continue
 		}
-		if len(dep.PromptPins) == 0 {
+		if len(dep.TemplatePins) == 0 {
 			return fmt.Errorf("prompton: schema1 deployment %s must pin at least one prompt version", key)
 		}
 		if dep.PromptVersion == nil || *dep.PromptVersion <= 0 {
 			return fmt.Errorf("prompton: deployment %s prompt_version must be a positive integer", key)
 		}
 		defaultVersionKey := fmt.Sprintf("%s@%d", key, *dep.PromptVersion)
-		versionKey := dep.PromptPins[DefaultPrompt]
+		versionKey := dep.TemplatePins[DefaultTemplate]
 		if versionKey != defaultVersionKey {
 			return fmt.Errorf("prompton: schema1 deployment %s default prompt pin must match prompt_version", key)
 		}
@@ -531,14 +531,14 @@ func validateSchema1References(snap *UseCaseDocument) error {
 	return nil
 }
 
-// PromptNames lists the prompt names the live revision of a use case pins.
-func (s *UseCaseDocument) PromptNames(useCase string) []string {
-	dep := s.Deployments[useCase]
+// TemplateNames lists the template names the live revision of a prompt pins.
+func (s *PromptDocument) TemplateNames(prompt string) []string {
+	dep := s.Deployments[prompt]
 	if dep == nil {
 		return []string{}
 	}
-	names := make([]string, 0, len(dep.PromptPins))
-	for name := range dep.PromptPins {
+	names := make([]string, 0, len(dep.TemplatePins))
+	for name := range dep.TemplatePins {
 		names = append(names, name)
 	}
 	sort.Strings(names)

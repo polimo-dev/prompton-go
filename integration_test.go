@@ -39,24 +39,24 @@ func liveClient(t *testing.T, tweak func(*Config)) *Client {
 	}
 	t.Cleanup(func() { _ = c.Close() })
 	waitFor(t, 10*time.Second, "the first live snapshot", func() bool {
-		return c.UseCaseDocumentInfo().Source == SourceRemote
+		return c.PromptDocumentInfo().Source == SourceRemote
 	})
 	return c
 }
 
 func TestLiveSnapshotAndConditionalRepoll(t *testing.T) {
 	c := liveClient(t, nil)
-	info := c.UseCaseDocumentInfo()
+	info := c.PromptDocumentInfo()
 	if info.ETag == "" {
 		t.Fatal("the server sent no ETag")
 	}
 	if info.Environment != "production" {
 		t.Fatalf("environment %q", info.Environment)
 	}
-	snap := c.UseCaseDocument()
+	snap := c.PromptDocument()
 	for _, key := range []string{"greeting", "summarize", "embed"} {
-		if _, ok := snap.UseCases[key]; !ok {
-			t.Fatalf("the fixture project has no use case %q", key)
+		if _, ok := snap.Prompts[key]; !ok {
+			t.Fatalf("the fixture project has no prompt %q", key)
 		}
 	}
 
@@ -65,7 +65,7 @@ func TestLiveSnapshotAndConditionalRepoll(t *testing.T) {
 	if err := c.Refresh(testContext(t)); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	after := c.UseCaseDocumentInfo()
+	after := c.PromptDocumentInfo()
 	if after.ETag != info.ETag || after.Stale {
 		t.Fatalf("a 304 changed the cached document: %+v then %+v", info, after)
 	}
@@ -80,44 +80,44 @@ func TestLiveSnapshotAndConditionalRepoll(t *testing.T) {
 	}
 }
 
-func TestLiveLocalUseCaseMatchesServerPromptEndpoint(t *testing.T) {
+func TestLiveLocalPromptMatchesServerPromptEndpoint(t *testing.T) {
 	c := liveClient(t, nil)
 
 	cases := []struct {
 		name      string
-		useCase   string
-		prompt    string
+		promptKey string
+		template  string
 		variables map[string]interface{}
 	}{
-		{"greeting/default", "greeting", "", map[string]interface{}{"name": "Ada"}},
-		{"greeting/ko", "greeting", "ko", map[string]interface{}{"name": "아다"}},
+		{"greeting/default", "greeting", "", map[string]interface{}{"name": "Ada", "language": "en"}},
+		{"greeting/korean-branch", "greeting", "", map[string]interface{}{"name": "아다", "language": "ko"}},
 		{"summarize", "summarize", "", map[string]interface{}{"items": []interface{}{"alpha", "beta", "gamma"}}},
 		{"embed", "embed", "", nil},
 	}
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			var opts []UseCaseOption
-			if tc.prompt != "" {
-				opts = append(opts, WithPrompt(tc.prompt))
+			var opts []PromptOption
+			if tc.template != "" {
+				opts = append(opts, WithTemplate(tc.template))
 			}
 			if tc.variables != nil {
 				opts = append(opts, WithVariables(tc.variables))
 			}
-			local, err := c.UseCase(testContext(t), tc.useCase, opts...)
+			local, err := c.Prompt(testContext(t), tc.promptKey, opts...)
 			if err != nil {
 				t.Fatalf("local resolve: %v", err)
 			}
 			remote, err := c.postResolve(testContext(t), resolveRequest{
-				UseCase:     tc.useCase,
+				Prompt:      tc.promptKey,
 				Environment: "production",
-				Prompt:      tc.prompt,
+				Template:    tc.template,
 				Variables:   tc.variables,
 			})
 			if err != nil {
-				t.Fatalf("prompt endpoint: %v", err)
+				t.Fatalf("render endpoint: %v", err)
 			}
-			server := resolutionFromResponse(tc.useCase, remote)
+			server := resolutionFromResponse(tc.promptKey, remote)
 
 			if local.Model != server.Model || local.ModelID != server.ModelID || local.Provider != server.Provider {
 				t.Fatalf("model differs: local %+v, server %+v", local, server)
@@ -126,11 +126,11 @@ func TestLiveLocalUseCaseMatchesServerPromptEndpoint(t *testing.T) {
 				t.Fatalf("deployment differs: %s/%s vs %s/%s",
 					local.DeploymentID, local.DeploymentRevision, server.DeploymentID, server.DeploymentRevision)
 			}
-			if local.PromptVersionID != server.PromptVersionID || local.Prompt != server.Prompt {
-				t.Fatalf("pin differs: %q/%q vs %q/%q", local.Prompt, local.PromptVersionID, server.Prompt, server.PromptVersionID)
+			if local.PromptVersionID != server.PromptVersionID || local.Template != server.Template {
+				t.Fatalf("pin differs: %q/%q vs %q/%q", local.Template, local.PromptVersionID, server.Template, server.PromptVersionID)
 			}
-			if !reflect.DeepEqual(local.PromptNames, server.PromptNames) {
-				t.Fatalf("prompt names differ: %v vs %v", local.PromptNames, server.PromptNames)
+			if !reflect.DeepEqual(local.TemplateNames, server.TemplateNames) {
+				t.Fatalf("template names differ: %v vs %v", local.TemplateNames, server.TemplateNames)
 			}
 			if string(canonicalJSON(local.Params)) != string(canonicalJSON(server.Params)) {
 				t.Fatalf("params differ: %s vs %s", canonicalJSON(local.Params), canonicalJSON(server.Params))
@@ -139,11 +139,11 @@ func TestLiveLocalUseCaseMatchesServerPromptEndpoint(t *testing.T) {
 				t.Fatalf("provider_options differ: %s vs %s",
 					canonicalJSON(local.ProviderOptions), canonicalJSON(server.ProviderOptions))
 			}
-			if !reflect.DeepEqual(local.useCaseResolution.Messages, server.Messages) {
-				t.Fatalf("rendered messages differ:\nlocal  %+v\nserver %+v", local.useCaseResolution.Messages, server.Messages)
+			if !reflect.DeepEqual(local.promptResolution.Messages, server.Messages) {
+				t.Fatalf("rendered messages differ:\nlocal  %+v\nserver %+v", local.promptResolution.Messages, server.Messages)
 			}
-			if local.useCaseResolution.Text != server.Text {
-				t.Fatalf("rendered text differs:\nlocal  %q\nserver %q", local.useCaseResolution.Text, server.Text)
+			if local.promptResolution.Text != server.Text {
+				t.Fatalf("rendered text differs:\nlocal  %q\nserver %q", local.promptResolution.Text, server.Text)
 			}
 		})
 	}
@@ -151,18 +151,18 @@ func TestLiveLocalUseCaseMatchesServerPromptEndpoint(t *testing.T) {
 
 func TestLiveStagingEnvironmentResolvesSeparately(t *testing.T) {
 	c := liveClient(t, func(cfg *Config) { cfg.Environment = "staging" })
-	if c.UseCaseDocumentInfo().Environment != "staging" {
-		t.Fatalf("environment %q, want staging", c.UseCaseDocumentInfo().Environment)
+	if c.PromptDocumentInfo().Environment != "staging" {
+		t.Fatalf("environment %q, want staging", c.PromptDocumentInfo().Environment)
 	}
-	local, err := c.UseCase(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	local, err := c.Prompt(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	remote, err := c.postResolve(testContext(t), resolveRequest{
-		UseCase: "greeting", Environment: "staging", Variables: map[string]interface{}{"name": "Ada"},
+		Prompt: "greeting", Environment: "staging", Variables: map[string]interface{}{"name": "Ada"},
 	})
 	if err != nil {
-		t.Fatalf("prompt endpoint: %v", err)
+		t.Fatalf("render endpoint: %v", err)
 	}
 	if string(canonicalJSON(local.Params)) != string(canonicalJSON(remote.Params)) {
 		t.Fatalf("staging params differ: %s vs %s", canonicalJSON(local.Params), canonicalJSON(remote.Params))
@@ -172,32 +172,33 @@ func TestLiveStagingEnvironmentResolvesSeparately(t *testing.T) {
 func TestLiveErrorCases(t *testing.T) {
 	c := liveClient(t, nil)
 
-	if _, err := c.UseCase(testContext(t), "does_not_exist"); !errors.Is(err, ErrUnknownUseCase) {
-		t.Fatalf("unknown use case locally: %v", err)
-	}
-	if _, err := c.RemoteUseCase(testContext(t), "does_not_exist"); !errors.Is(err, ErrUnknownUseCase) {
-		t.Fatalf("unknown use case remotely: %v", err)
-	}
-
-	_, err := c.UseCase(testContext(t), "greeting", WithPrompt("fr"))
-	var re *UseCaseError
-	if !errors.As(err, &re) || re.Code != "unknown_prompt" {
+	if _, err := c.Prompt(testContext(t), "does_not_exist"); !errors.Is(err, ErrUnknownTemplate) {
 		t.Fatalf("unknown prompt locally: %v", err)
 	}
-	if _, err := c.RemoteUseCase(testContext(t), "greeting", WithPrompt("fr")); !errors.Is(err, ErrUnknownPrompt) {
+	if _, err := c.RenderPrompt(testContext(t), "does_not_exist"); !errors.Is(err, ErrUnknownTemplate) {
 		t.Fatalf("unknown prompt remotely: %v", err)
 	}
 
+	_, err := c.Prompt(testContext(t), "greeting", WithTemplate("fr"))
+	var re *PromptError
+	var apiErr *APIError
+	if !errors.As(err, &re) || re.Code != "unknown_template" {
+		t.Fatalf("unknown prompt locally: %v", err)
+	}
+	_, err = c.RenderPrompt(testContext(t), "greeting", WithTemplate("fr"))
+	if !errors.As(err, &apiErr) || apiErr.Status != 400 || apiErr.Code != "invalid_request" || apiErr.Details["template"] != "fr" {
+		t.Fatalf("non-default template remotely: %v", err)
+	}
+
 	// A missing variable is caught locally, and the server agrees.
-	_, err = c.UseCase(testContext(t), "greeting", WithVariables(map[string]interface{}{}))
+	_, err = c.Prompt(testContext(t), "greeting", WithVariables(map[string]interface{}{}))
 	var mv *MissingVariableError
 	if !errors.As(err, &mv) || mv.Variable != "name" {
 		t.Fatalf("missing variable locally: %v", err)
 	}
 	_, err = c.postResolve(testContext(t), resolveRequest{
-		UseCase: "greeting", Environment: "production", Variables: map[string]interface{}{},
+		Prompt: "greeting", Environment: "production", Variables: map[string]interface{}{},
 	})
-	var apiErr *APIError
 	if !errors.As(err, &apiErr) || apiErr.Status != 400 || apiErr.Details["missing_variable"] != "name" {
 		t.Fatalf("missing variable remotely: %v", err)
 	}
@@ -218,7 +219,7 @@ func TestLiveErrorCases(t *testing.T) {
 
 func TestLiveLogsBatchIsAcceptedThenDuplicated(t *testing.T) {
 	c := liveClient(t, nil)
-	res, err := c.UseCase(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res, err := c.Prompt(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestLiveLogsBatchIsAcceptedThenDuplicated(t *testing.T) {
 	_, err = res.Track(testContext(t), CallMeta{
 		ID:        okID,
 		Variables: map[string]interface{}{"name": "Ada"},
-		Messages:  res.useCaseResolution.Messages,
+		Messages:  res.promptResolution.Messages,
 		TraceID:   "go-sdk-integration",
 		Context:   map[string]interface{}{"language": "en"},
 		Metadata:  map[string]interface{}{"suite": "integration"},
@@ -256,13 +257,13 @@ func TestLiveLogsBatchIsAcceptedThenDuplicated(t *testing.T) {
 	}
 
 	if err := c.Log(LogRecord{
-		ID:              errID,
-		UseCaseEvidence: res,
-		Status:          StatusError,
-		StartedAt:       startedAt,
-		LatencyMS:       120,
-		Error:           NewCallError(ErrorKindRateLimited, 429, "rate limited by upstream provider"),
-		Input:           &Input{Variables: map[string]interface{}{"name": "Ada"}, Messages: res.useCaseResolution.Messages},
+		ID:             errID,
+		PromptEvidence: res,
+		Status:         StatusError,
+		StartedAt:      startedAt,
+		LatencyMS:      120,
+		Error:          NewCallError(ErrorKindRateLimited, 429, "rate limited by upstream provider"),
+		Input:          &Input{Variables: map[string]interface{}{"name": "Ada"}, Messages: res.promptResolution.Messages},
 	}); err != nil {
 		t.Fatalf("log: %v", err)
 	}
@@ -276,8 +277,8 @@ func TestLiveLogsBatchIsAcceptedThenDuplicated(t *testing.T) {
 
 	// The id is the idempotency key: resending it is counted, never stored twice.
 	replay := []map[string]interface{}{
-		{"id": okID, "use_case": "greeting", "model": res.Model, "status": StatusOK, "started_at": startedAt.Format(time.RFC3339Nano)},
-		{"id": errID, "use_case": "greeting", "model": res.Model, "status": StatusOK, "started_at": startedAt.Format(time.RFC3339Nano)},
+		{"id": okID, "prompt_key": "greeting", "model": res.Model, "status": StatusOK, "started_at": startedAt.Format(time.RFC3339Nano)},
+		{"id": errID, "prompt_key": "greeting", "model": res.Model, "status": StatusOK, "started_at": startedAt.Format(time.RFC3339Nano)},
 	}
 	result, err := c.postLogs(testContext(t), "production", replay)
 	if err != nil {
@@ -294,18 +295,18 @@ func TestLiveLogsBatchIsAcceptedThenDuplicated(t *testing.T) {
 // the batch it travelled in.
 func TestLiveLogWithInvalidUTF8IsStillAccepted(t *testing.T) {
 	c := liveClient(t, nil)
-	res, err := c.UseCase(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res, err := c.Prompt(testContext(t), "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 
 	rec := LogRecord{
-		UseCaseEvidence: res,
-		Status:          StatusOK,
-		StartedAt:       time.Now().UTC(),
-		LatencyMS:       17,
-		TraceID:         "go-sdk-integration-utf8",
-		Output:          &Output{Content: "provider said: x\xff\xfey done"},
+		PromptEvidence: res,
+		Status:         StatusOK,
+		StartedAt:      time.Now().UTC(),
+		LatencyMS:      17,
+		TraceID:        "go-sdk-integration-utf8",
+		Output:         &Output{Content: "provider said: x\xff\xfey done"},
 	}
 	if err := c.Log(rec); err != nil {
 		t.Fatalf("log: %v", err)

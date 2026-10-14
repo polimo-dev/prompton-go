@@ -62,16 +62,16 @@ func TestLiveDemandContract(t *testing.T) {
 
 func liveText(t *testing.T, client *Client, ctx context.Context, key string, vars map[string]interface{}) string {
 	t.Helper()
-	useCase, err := client.UseCase(ctx, key)
+	prompt, err := client.Prompt(ctx, key)
 	if err != nil {
-		t.Fatalf("UseCase(%s): %v", key, err)
+		t.Fatalf("Prompt(%s): %v", key, err)
 	}
-	messages, err := useCase.Messages(ctx, vars)
+	messages, err := prompt.Messages(ctx, vars)
 	if err != nil {
 		t.Fatalf("Messages(%s): %v", key, err)
 	}
 	if len(messages) == 0 {
-		t.Fatalf("UseCase(%s) returned no messages", key)
+		t.Fatalf("Prompt(%s) returned no messages", key)
 	}
 	return messages[len(messages)-1].Content
 }

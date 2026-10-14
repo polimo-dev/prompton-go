@@ -130,15 +130,15 @@ type SDKInfo struct {
 
 // LogRecord is one monitoring log: one model call the app made.
 //
-// Required: UseCase, Model, Status and StartedAt. ID is filled with a fresh
+// Required: Prompt, Model, Status and StartedAt. ID is filled with a fresh
 // UUIDv7 when empty — PromptOn stores generation ids in a UUIDv7 column, so a
 // v4 id passes validation and then fails on write.
 type LogRecord struct {
-	ID      string
-	UseCase string
-	Kind    Kind
-	Model   string
-	Status  string
+	ID     string
+	Prompt string
+	Kind   Kind
+	Model  string
+	Status string
 
 	StartedAt time.Time
 	LatencyMS int
@@ -148,16 +148,16 @@ type LogRecord struct {
 	// hand-built record only reports one it actually has.
 	latencyMeasured bool
 
-	// UseCaseEvidence, when set, fills the deployment, prompt, model and source
+	// PromptEvidence, when set, fills the deployment, prompt, model and source
 	// fields this record does not carry itself.
-	UseCaseEvidence *UseCase
+	PromptEvidence *Prompt
 
-	// useCaseResolution is the internal evidence path used by Track.
-	useCaseResolution *useCaseResolution
+	// promptResolution is the internal evidence path used by Track.
+	promptResolution *promptResolution
 
 	DeploymentID        string
 	DeploymentRevision  string
-	Prompt              string
+	Template            string
 	PromptVersionID     string
 	PromptVersionNumber int
 	ModelID             string
@@ -197,18 +197,18 @@ const (
 	StatusError = "error"
 )
 
-// applyResolution fills the use-case evidence for every field the
+// applyResolution fills the prompt evidence for every field the
 // caller left empty.
 func (rec *LogRecord) applyResolution() {
-	r := rec.useCaseResolution
-	if r == nil && rec.UseCaseEvidence != nil {
-		r = rec.UseCaseEvidence.useCaseResolution
+	r := rec.promptResolution
+	if r == nil && rec.PromptEvidence != nil {
+		r = rec.PromptEvidence.promptResolution
 	}
 	if r == nil {
 		return
 	}
-	if rec.UseCase == "" {
-		rec.UseCase = r.UseCase
+	if rec.Prompt == "" {
+		rec.Prompt = r.Prompt
 	}
 	if rec.Kind == "" {
 		rec.Kind = r.Kind
@@ -228,8 +228,8 @@ func (rec *LogRecord) applyResolution() {
 	if rec.DeploymentRevision == "" {
 		rec.DeploymentRevision = r.DeploymentRevision
 	}
-	if rec.Prompt == "" {
-		rec.Prompt = r.Prompt
+	if rec.Template == "" {
+		rec.Template = r.Template
 	}
 	if rec.PromptVersionID == "" {
 		rec.PromptVersionID = r.PromptVersionID
@@ -246,8 +246,8 @@ func (rec *LogRecord) applyResolution() {
 }
 
 func (rec *LogRecord) validate() error {
-	if rec.UseCase == "" {
-		return errors.New("prompton: monitoring log needs a use_case")
+	if rec.Prompt == "" {
+		return errors.New("prompton: monitoring log needs a prompt")
 	}
 	if rec.Model == "" {
 		return errors.New("prompton: monitoring log needs a model")
@@ -280,16 +280,14 @@ func (rec *LogRecord) checkStartedAt(now time.Time) error {
 func (rec *LogRecord) toMap() map[string]interface{} {
 	out := map[string]interface{}{
 		"id":         rec.ID,
-		"prompt_key": rec.UseCase,
+		"prompt_key": rec.Prompt,
 		"model":      rec.Model,
 		"status":     rec.Status,
 		"started_at": rec.StartedAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
 	}
 	putString(out, "kind", string(rec.Kind))
-	if rec.DeploymentRevision != "" {
-		out["deployment_revision"] = rec.DeploymentRevision
-	}
-	putString(out, "template", rec.Prompt)
+	putString(out, "deployment_revision", rec.DeploymentRevision)
+	putString(out, "template", rec.Template)
 	if rec.PromptVersionNumber > 0 {
 		out["prompt_version_number"] = rec.PromptVersionNumber
 	}

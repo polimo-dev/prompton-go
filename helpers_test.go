@@ -83,7 +83,7 @@ func stagingSnapshotJSON() string {
 // unlabelledSnapshotJSON is a valid v3 document that names neither environment
 // nor project — the shape a hand-assembled or legacy bundle has.
 func unlabelledSnapshotJSON() string {
-	return `{"schema_version":4,"use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
+	return `{"schema_version":4,"prompts":{},"deployments":{},"prompt_versions":{},"models":{}}`
 }
 
 func writeFile(t *testing.T, dir, name, content string) string {
@@ -111,21 +111,20 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-func mustUseCase(t *testing.T, c *Client, useCase string, opts ...UseCaseOption) *UseCase {
+func mustPrompt(t *testing.T, c *Client, prompt string, opts ...PromptOption) *Prompt {
 	t.Helper()
-	res, err := c.UseCase(testContext(t), useCase, opts...)
+	res, err := c.Prompt(testContext(t), prompt, opts...)
 	if err != nil {
-		t.Fatalf("resolve %s: %v", useCase, err)
+		t.Fatalf("resolve %s: %v", prompt, err)
 	}
 	return res
 }
 
 func sampleRecord(i int) LogRecord {
 	return LogRecord{
-		UseCase:   "greeting",
-		Model:     "openai/gpt-4o-mini",
-		Status:    StatusOK,
-		StartedAt: time.Now().UTC(),
-		TraceID:   fmt.Sprintf("test:%d", i),
+		Prompt:  "greeting",
+		Model:   "openai/gpt-4o-mini",
+		Status:  StatusOK,
+		TraceID: fmt.Sprintf("test:%d", i),
 	}
 }

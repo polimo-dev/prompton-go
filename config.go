@@ -33,7 +33,7 @@ const (
 	// ModeLive is the normal mode: fetch prompt config on demand, send monitoring logs.
 	ModeLive Mode = "live"
 	// ModeTest makes no HTTP calls at all and captures monitoring logs in
-	// memory for assertions. Snapshots are injected with SetUseCaseDocument.
+	// memory for assertions. Snapshots are injected with SetPromptDocument.
 	ModeTest Mode = "test"
 	// ModeOffline selects from the disk cache and the bundle only. Monitoring
 	// logs are kept in memory instead of being sent.
@@ -74,7 +74,7 @@ type Config struct {
 	// HTTPClient replaces the default client. Its own Timeout, if set, wins.
 	HTTPClient *http.Client
 
-	// DiskCachePath is where the use-case document is mirrored. Empty means a default
+	// DiskCachePath is where the prompt document is mirrored. Empty means a default
 	// path under the OS cache (or temp) directory named by project and
 	// environment.
 	DiskCachePath string
@@ -82,9 +82,9 @@ type Config struct {
 	// DisableDiskCache turns the disk tier off entirely.
 	DisableDiskCache bool
 
-	// BundlePath is a use-case document JSON file shipped inside the app, used when
+	// BundlePath is a prompt document JSON file shipped inside the app, used when
 	// memory and disk are both empty. Commit one at migration time so a cold
-	// start with no network still selects a use case.
+	// start with no network still selects a prompt.
 	BundlePath string
 
 	// HashEndUser sends sha256(end_user_ref) instead of the raw reference. An
@@ -95,7 +95,7 @@ type Config struct {
 	// the record to send; returning nil drops the payload.
 	Redact func(map[string]interface{}) map[string]interface{}
 
-	// PayloadDefaults applies to a use case whose document carries no policy.
+	// PayloadDefaults applies to a prompt whose document carries no policy.
 	PayloadDefaults PayloadPolicy
 
 	// LogFlushInterval, LogFlushSize and LogFlushBytes are the monitoring-log

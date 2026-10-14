@@ -7,14 +7,14 @@ import (
 	"github.com/polimo-dev/prompton-go/internal/liquid"
 )
 
-// DefaultPrompt is the prompt name used when a call names none.
-const DefaultPrompt = "default"
+// DefaultTemplate is the template name used when a call names none.
+const DefaultTemplate = "default"
 
-// Source records where the configuration behind a use-case selection came from. It is
+// Source records where the configuration behind a prompt resolution came from. It is
 // sent with every monitoring log so a stale deployment is visible in the data.
 type Source string
 
-// The four use-case document sources.
+// The four prompt document sources.
 const (
 	SourceRemote Source = "remote"
 	SourceDisk   Source = "disk"
@@ -22,24 +22,24 @@ const (
 	SourceManual Source = "manual"
 )
 
-// useCaseResolution is the answer to "what should this call use": the model to call,
+// promptResolution is the answer to "what should this call use": the model to call,
 // the parameters to send it, and the prompt to send — rendered when the call
 // supplied variables, raw when it did not.
 //
 // The app calls the provider itself with Model, Params, ProviderOptions and
 // Messages (or Text), then logs the call with the evidence carried
 // here: DeploymentID, DeploymentRevision, Prompt and PromptVersionID.
-type useCaseResolution struct {
-	UseCase string
-	Kind    Kind
+type promptResolution struct {
+	Prompt string
+	Kind   Kind
 
 	DeploymentID       string
 	DeploymentRevision string
 
-	// Prompt is the chosen prompt name, empty for an embedding use case.
-	Prompt string
-	// PromptNames lists every prompt name the live revision pins, sorted.
-	PromptNames []string
+	// Prompt is the chosen template name, empty for an embedding prompt.
+	Template string
+	// TemplateNames lists every template name the live revision pins, sorted.
+	TemplateNames []string
 
 	// Model is the provider-side model string to send; ModelID is the PromptOn
 	// catalog id.
@@ -47,7 +47,7 @@ type useCaseResolution struct {
 	ModelID  string
 	Provider string
 
-	// Params is use_case.default_params merged with deployment.params, and
+	// Params is prompt.default_params merged with deployment.params, and
 	// ProviderOptions is model.provider_options merged with
 	// deployment.provider_options. Both are shallow merges, right side wins.
 	Params          map[string]interface{}
@@ -58,8 +58,8 @@ type useCaseResolution struct {
 	PromptVersionNumber int
 	Engine              string
 
-	// Messages is set for a chat use case, Text for a text use case, and
-	// Decision for a decision use case; an embedding use case has none.
+	// Messages is set for a chat prompt, Text for a text prompt, and
+	// Decision for a decision prompt; an embedding prompt has none.
 	Messages []Message
 	Text     string
 	Decision map[string]interface{}
@@ -80,11 +80,11 @@ type useCaseResolution struct {
 	Warnings []string
 }
 
-// UseCaseOptions are the knobs of a resolve call.
-type UseCaseOptions struct {
-	// Prompt selects the prompt name; empty means "default". It is ignored for
-	// an embedding use case rather than rejected.
-	Prompt string
+// PromptOptions are the knobs of a resolve call.
+type PromptOptions struct {
+	// Template selects the template name; empty means "default". It is ignored for
+	// an embedding prompt rather than rejected.
+	Template string
 	// Variables renders the prompt. Nil leaves the raw template in place.
 	Variables map[string]interface{}
 	// Environment overrides the environment for a remote resolve. Local
@@ -93,40 +93,40 @@ type UseCaseOptions struct {
 	Environment string
 }
 
-// UseCaseOption configures a resolve call.
-type UseCaseOption func(*UseCaseOptions)
+// PromptOption configures a resolve call.
+type PromptOption func(*PromptOptions)
 
-// WithPrompt selects a prompt name.
-func WithPrompt(name string) UseCaseOption {
-	return func(o *UseCaseOptions) { o.Prompt = name }
+// WithTemplate selects a template name.
+func WithTemplate(name string) PromptOption {
+	return func(o *PromptOptions) { o.Template = name }
 }
 
 // WithVariables renders the prompt with these variables.
-func WithVariables(vars map[string]interface{}) UseCaseOption {
-	return func(o *UseCaseOptions) { o.Variables = vars }
+func WithVariables(vars map[string]interface{}) PromptOption {
+	return func(o *PromptOptions) { o.Variables = vars }
 }
 
-// WithEnvironment overrides the environment for this call. Only RemoteUseCase
+// WithEnvironment overrides the environment for this call. Only RenderPrompt
 // can honour it: a local Resolve fails with an "environment_mismatch"
-// UseCaseError when it names anything other than the document in memory, since
+// PromptError when it names anything other than the document in memory, since
 // one process holds one environment's document.
-func WithEnvironment(env string) UseCaseOption {
-	return func(o *UseCaseOptions) { o.Environment = env }
+func WithEnvironment(env string) PromptOption {
+	return func(o *PromptOptions) { o.Environment = env }
 }
 
 // environmentMismatch is the error a local resolve returns when the call asked
 // for an environment other than the one loaded.
-func environmentMismatch(useCase, asked, loaded string) error {
-	return &UseCaseError{
+func environmentMismatch(prompt, asked, loaded string) error {
+	return &PromptError{
 		Code:                "environment_mismatch",
-		UseCase:             useCase,
+		Prompt:              prompt,
 		Environment:         asked,
 		DocumentEnvironment: loaded,
 	}
 }
 
-func buildResolveOptions(opts []UseCaseOption) UseCaseOptions {
-	var o UseCaseOptions
+func buildResolveOptions(opts []PromptOption) PromptOptions {
+	var o PromptOptions
 	for _, fn := range opts {
 		if fn != nil {
 			fn(&o)
@@ -139,35 +139,35 @@ func buildResolveOptions(opts []UseCaseOption) UseCaseOptions {
 // function: the same document and the same arguments always give the same
 // answer, on every SDK.
 //
-//	deployment       = snapshot.deployments[use_case]
+//	deployment       = snapshot.deployments[prompt]
 //	version          = snapshot.prompt_versions[deployment.prompt_pins[prompt]]
 //	model            = snapshot.models[deployment.model_id]
-//	params           = use_case.default_params <- deployment.params
+//	params           = prompt.default_params <- deployment.params
 //	provider_options = model.provider_options   <- deployment.provider_options
-func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOption) (*useCaseResolution, error) {
+func resolveSnapshot(snap *PromptDocument, prompt string, opts ...PromptOption) (*promptResolution, error) {
 	if snap == nil {
 		return nil, ErrNotReady
 	}
 	o := buildResolveOptions(opts)
 	if o.Environment != "" && o.Environment != snap.Environment {
-		return nil, environmentMismatch(useCase, o.Environment, snap.Environment)
+		return nil, environmentMismatch(prompt, o.Environment, snap.Environment)
 	}
 
-	uc, ok := snap.UseCases[useCase]
+	uc, ok := snap.Prompts[prompt]
 	if !ok {
-		return nil, &UseCaseError{Code: "unknown_use_case", UseCase: useCase}
+		return nil, &PromptError{Code: "unknown_prompt", Prompt: prompt}
 	}
-	dep, ok := snap.Deployments[useCase]
+	dep, ok := snap.Deployments[prompt]
 	if !ok || dep == nil {
-		return nil, &UseCaseError{Code: "unresolved", UseCase: useCase}
+		return nil, &PromptError{Code: "unresolved", Prompt: prompt}
 	}
 
-	res := &useCaseResolution{
-		UseCase:            useCase,
+	res := &promptResolution{
+		Prompt:             prompt,
 		Kind:               uc.Kind,
 		DeploymentID:       dep.ID,
 		DeploymentRevision: dep.Revision,
-		PromptNames:        snap.PromptNames(useCase),
+		TemplateNames:      snap.TemplateNames(prompt),
 		Variables:          uc.Variables,
 		PayloadPolicy:      uc.PayloadPolicy,
 		Source:             SourceManual,
@@ -176,29 +176,29 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 
 	var version *PromptVersion
 	if uc.Kind != KindEmbedding {
-		name := o.Prompt
+		name := o.Template
 		if name == "" {
-			name = DefaultPrompt
+			name = DefaultTemplate
 		}
-		versionID, pinned := dep.PromptPins[name]
+		versionID, pinned := dep.TemplatePins[name]
 		if !pinned {
-			return nil, &UseCaseError{
-				Code:        "unknown_prompt",
-				UseCase:     useCase,
-				Prompt:      name,
-				PromptNames: res.PromptNames,
+			return nil, &PromptError{
+				Code:          "unknown_template",
+				Prompt:        prompt,
+				Template:      name,
+				TemplateNames: res.TemplateNames,
 			}
 		}
-		res.Prompt = name
+		res.Template = name
 		if v, ok := snap.PromptVersions[versionID]; ok {
 			version = v
 		} else {
 			res.Warnings = append(res.Warnings, "missing_prompt_version: "+versionID)
 		}
 	} else {
-		// An embedding use case has no prompt at all; a name passed with the
+		// An embedding prompt has no template at all; a name passed with the
 		// request is ignored rather than rejected.
-		res.PromptNames = []string{}
+		res.TemplateNames = []string{}
 	}
 
 	var model *Model
@@ -252,7 +252,7 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 // Render renders a resolution's prompt with these variables and returns a copy
 // carrying the rendered messages or text. The original is left untouched, so a
 // resolution can be rendered once per call.
-func (r *useCaseResolution) Render(vars map[string]interface{}) (*useCaseResolution, error) {
+func (r *promptResolution) Render(vars map[string]interface{}) (*promptResolution, error) {
 	clone := *r
 	clone.Messages = append([]Message(nil), r.Messages...)
 	clone.Tools = cloneMap(r.Tools)
@@ -380,7 +380,7 @@ func cloneValue(value interface{}) interface{} {
 }
 
 // RenderMessages renders a chat resolution and returns just the messages.
-func (r *useCaseResolution) RenderMessages(vars map[string]interface{}) ([]Message, error) {
+func (r *promptResolution) RenderMessages(vars map[string]interface{}) ([]Message, error) {
 	if r.Kind != KindChat || r.Messages == nil {
 		return nil, ErrNoTemplate
 	}
@@ -392,7 +392,7 @@ func (r *useCaseResolution) RenderMessages(vars map[string]interface{}) ([]Messa
 }
 
 // RenderText renders a text resolution and returns just the text.
-func (r *useCaseResolution) RenderText(vars map[string]interface{}) (string, error) {
+func (r *promptResolution) RenderText(vars map[string]interface{}) (string, error) {
 	if r.Kind != KindText || r.Text == "" {
 		return "", ErrNoTemplate
 	}
@@ -404,7 +404,7 @@ func (r *useCaseResolution) RenderText(vars map[string]interface{}) (string, err
 }
 
 // RenderDecision renders a decision resolution and returns the native decision payload.
-func (r *useCaseResolution) RenderDecision(vars map[string]interface{}) (map[string]interface{}, error) {
+func (r *promptResolution) RenderDecision(vars map[string]interface{}) (map[string]interface{}, error) {
 	if r.Kind != KindDecision || r.Decision == nil {
 		return nil, ErrNoTemplate
 	}
@@ -415,7 +415,7 @@ func (r *useCaseResolution) RenderDecision(vars map[string]interface{}) (map[str
 	return rendered.Decision, nil
 }
 
-func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
+func renderInto(res *promptResolution, vars map[string]interface{}) error {
 	engine := liquid.Engine(res.Engine)
 	if engine != liquid.EngineRaw {
 		engine = liquid.EngineLiquid

@@ -60,15 +60,13 @@ func TestConformanceStopKind(t *testing.T) {
 // ---------------------------------------------------------------------------
 // prompt.json
 
-func TestConformanceUseCase(t *testing.T) {
+func TestConformancePrompt(t *testing.T) {
 	var suite struct {
 		Documents map[string]json.RawMessage `json:"documents"`
 		Cases     []struct {
 			Name        string                 `json:"name"`
 			DocumentRef string                 `json:"document_ref"`
-			UseCase     string                 `json:"use_case"`
-			PromptKey   string                 `json:"prompt_key"`
-			Prompt      string                 `json:"prompt"`
+			Prompt      string                 `json:"prompt_key"`
 			Template    string                 `json:"template"`
 			Variables   map[string]interface{} `json:"variables"`
 			Environment string                 `json:"environment"`
@@ -77,12 +75,12 @@ func TestConformanceUseCase(t *testing.T) {
 	}
 	loadConformance(t, "prompt.json", &suite)
 	if len(suite.Cases) == 0 {
-		t.Fatal("no use-case cases loaded")
+		t.Fatal("no prompt cases loaded")
 	}
 
-	documents := map[string]*UseCaseDocument{}
+	documents := map[string]*PromptDocument{}
 	for name, raw := range suite.Documents {
-		snap, err := ParseUseCaseDocument(raw)
+		snap, err := ParsePromptDocument(raw)
 		if err != nil {
 			t.Fatalf("parse document %s: %v", name, err)
 		}
@@ -96,45 +94,37 @@ func TestConformanceUseCase(t *testing.T) {
 			if snap == nil {
 				t.Fatalf("unknown document_ref %q", c.DocumentRef)
 			}
-			var opts []UseCaseOption
-			promptName := c.Prompt
-			if promptName == "" {
-				promptName = c.Template
-			}
-			if promptName != "" {
-				opts = append(opts, WithPrompt(promptName))
+			var opts []PromptOption
+			if c.Template != "" {
+				opts = append(opts, WithTemplate(c.Template))
 			}
 			if c.Variables != nil {
 				opts = append(opts, WithVariables(c.Variables))
 			}
-			key := c.UseCase
-			if key == "" {
-				key = c.PromptKey
-			}
-			res, err := resolveSnapshot(snap, key, opts...)
+			res, err := resolveSnapshot(snap, c.Prompt, opts...)
 
 			if wantErr, ok := c.Expect["error"].(string); ok {
 				if err == nil {
 					t.Fatalf("expected error %q, got a resolution", wantErr)
 				}
-				assertUseCaseError(t, err, wantErr, c.Expect)
+				assertPromptError(t, err, wantErr, c.Expect)
 				return
 			}
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 			res.Source = SourceRemote
-			got := useCaseSelectionToMap(res)
+			got := promptSelectionToMap(res)
 			gotJSON := string(canonicalJSON(got))
 			wantJSON := string(canonicalJSON(c.Expect))
 			if gotJSON != wantJSON {
-				t.Fatalf("use-case mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
+				t.Fatalf("prompt mismatch\n got: %s\nwant: %s", gotJSON, wantJSON)
 			}
 		})
 	}
 }
 
-func assertUseCaseError(t *testing.T, err error, want string, expect map[string]interface{}) {
+func assertPromptError(t *testing.T, err error, want string, expect map[string]interface{}) {
 	t.Helper()
 	switch want {
 	case "missing_variable":
@@ -146,63 +136,63 @@ func assertUseCaseError(t *testing.T, err error, want string, expect map[string]
 			t.Fatalf("variable %q, want %q", mv.Variable, v)
 		}
 	default:
-		re, ok := err.(*UseCaseError)
+		re, ok := err.(*PromptError)
 		if !ok {
-			t.Fatalf("expected *UseCaseError, got %T (%v)", err, err)
+			t.Fatalf("expected *PromptError, got %T (%v)", err, err)
 		}
 		wantCode := want
 		if wantCode == "unknown_template" {
-			wantCode = "unknown_prompt"
-		} else if wantCode == "unknown_prompt" && re.Code == "unknown_use_case" {
-			wantCode = "unknown_use_case"
+			wantCode = "unknown_template"
+		} else if wantCode == "unknown_template" && re.Code == "unknown_template" {
+			wantCode = "unknown_template"
 		}
 		if re.Code != wantCode {
 			t.Fatalf("code %q, want %q", re.Code, want)
 		}
-		if key, ok := expect["key"].(string); ok && re.UseCase != "" && re.UseCase != key {
-			t.Fatalf("key %q, want %q", re.UseCase, key)
+		if key, ok := expect["key"].(string); ok && re.Prompt != "" && re.Prompt != key {
+			t.Fatalf("key %q, want %q", re.Prompt, key)
 		}
-		if p, ok := expect["template"].(string); ok && re.Prompt != p {
-			t.Fatalf("template %q, want %q", re.Prompt, p)
+		if p, ok := expect["template"].(string); ok && re.Template != p {
+			t.Fatalf("template %q, want %q", re.Template, p)
 		}
 		list, ok := expect["template_names"].([]interface{})
 		if !ok {
 			list, ok = expect["prompt_names"].([]interface{})
 		}
 		if ok {
-			if len(list) != len(re.PromptNames) {
-				t.Fatalf("prompt_names %v, want %v", re.PromptNames, list)
+			if len(list) != len(re.TemplateNames) {
+				t.Fatalf("prompt_names %v, want %v", re.TemplateNames, list)
 			}
 			for i, v := range list {
-				if re.PromptNames[i] != v.(string) {
-					t.Fatalf("prompt_names %v, want %v", re.PromptNames, list)
+				if re.TemplateNames[i] != v.(string) {
+					t.Fatalf("prompt_names %v, want %v", re.TemplateNames, list)
 				}
 			}
 		}
 	}
 }
 
-// useCaseSelectionToMap projects a useCaseResolution onto the shape prompt.json expects,
+// promptSelectionToMap projects a promptResolution onto the shape prompt.json expects,
 // which is also the shape prompt endpoint answers with.
-func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
+func promptSelectionToMap(r *promptResolution) map[string]interface{} {
 	out := map[string]interface{}{
 		"deployment_id":    nil,
-		"key":              r.UseCase,
+		"key":              r.Prompt,
 		"revision":         r.DeploymentRevision,
 		"kind":             string(r.Kind),
 		"params":           r.Params,
 		"provider_options": r.ProviderOptions,
-		"template_names":   r.PromptNames,
+		"template_names":   r.TemplateNames,
 		"source":           string(r.Source),
 		"warnings":         r.Warnings,
 	}
 	if out["warnings"] == nil {
 		out["warnings"] = []string{}
 	}
-	if r.Prompt == "" {
+	if r.Template == "" {
 		out["template"] = nil
 	} else {
-		out["template"] = r.Prompt
+		out["template"] = r.Template
 	}
 	if r.Model == "" {
 		out["model"] = nil
@@ -318,7 +308,7 @@ func TestConformanceLogRecords(t *testing.T) {
 		r := r
 		golden = append(golden, r.Record)
 		t.Run(r.Name, func(t *testing.T) {
-			for _, field := range canonicalRequiredFields(suite.FieldRules.Required) {
+			for _, field := range suite.FieldRules.Required {
 				if _, ok := r.Record[field]; !ok {
 					t.Errorf("required field %q is missing", field)
 				}
@@ -412,18 +402,6 @@ func withExplicitUsageNulls(record map[string]interface{}) map[string]interface{
 	return out
 }
 
-func canonicalRequiredFields(fields []string) []string {
-	out := make([]string, len(fields))
-	for i, field := range fields {
-		if field == "use_case" {
-			out[i] = "prompt_key"
-		} else {
-			out[i] = field
-		}
-	}
-	return out
-}
-
 // recordFromGolden reads a golden wire record back into a LogRecord, so
 // the round-trip exercises the builder rather than a hand-written map.
 func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
@@ -434,7 +412,7 @@ func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
 	}
 	rec := LogRecord{
 		ID:                  str(m["id"]),
-		UseCase:             str(m["prompt_key"]),
+		Prompt:              str(m["prompt_key"]),
 		Kind:                Kind(str(m["kind"])),
 		Model:               str(m["model"]),
 		Status:              str(m["status"]),
@@ -442,7 +420,7 @@ func recordFromGolden(t *testing.T, m map[string]interface{}) LogRecord {
 		LatencyMS:           num(m["latency_ms"]),
 		DeploymentID:        str(m["deployment_id"]),
 		DeploymentRevision:  str(m["deployment_revision"]),
-		Prompt:              str(m["template"]),
+		Template:            str(m["template"]),
 		PromptVersionID:     str(m["prompt_version_id"]),
 		PromptVersionNumber: num(m["prompt_version_number"]),
 		ModelID:             str(m["model_id"]),

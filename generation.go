@@ -2,8 +2,6 @@ package prompton
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"time"
 )
 
@@ -36,7 +34,7 @@ type CallMeta struct {
 	Sequence   int
 
 	// Context is a free-form tag map (language, plan, whatever you slice by).
-	// useCaseResolution does not look at it: it is log-only. At most 2 KB or the
+	// promptResolution does not look at it: it is log-only. At most 2 KB or the
 	// server rejects the record.
 	Context map[string]interface{}
 
@@ -87,8 +85,8 @@ type Result struct {
 // the caller's problem.
 //
 // It fills in the id (a UUIDv7), the started_at, the sdk name and version, and —
-// when the record carries UseCaseEvidence — the deployment, prompt, model and
-// source fields. The payload policy of the use case is applied
+// when the record carries PromptEvidence — the deployment, prompt, model and
+// source fields. The payload policy of the prompt is applied
 // before the record is queued, so raw text never travels further than the
 // policy allows.
 func (c *Client) Log(rec LogRecord) error {
@@ -165,97 +163,6 @@ func (c *Client) Log(rec LogRecord) error {
 	return c.buffer.enqueue(environment, payload)
 }
 
-// TraceEvent is one monitored step inside a trace: a tool attempt or a final completion.
-// The SDK never calls customer tools; it only submits the events your app observed.
-type TraceEvent map[string]interface{}
-
-const (
-	EventKindToolAttempt = "tool_attempt"
-	EventKindCompletion  = "completion"
-
-	EventStatusStarted    = "started"
-	EventStatusOK         = "ok"
-	EventStatusError      = "error"
-	EventStatusDenied     = "denied"
-	EventStatusCancelled  = "cancelled"
-	EventStatusTimeout    = "timeout"
-	EventStatusMissing    = "missing"
-	EventStatusIncomplete = "incomplete"
-)
-
-var eventKinds = map[string]bool{
-	EventKindToolAttempt: true,
-	EventKindCompletion:  true,
-}
-
-var eventStatuses = map[string]bool{
-	EventStatusStarted:    true,
-	EventStatusOK:         true,
-	EventStatusError:      true,
-	EventStatusDenied:     true,
-	EventStatusCancelled:  true,
-	EventStatusTimeout:    true,
-	EventStatusMissing:    true,
-	EventStatusIncomplete: true,
-}
-
-// LogEvents submits observed tool/completion trace events synchronously. It fills event_id,
-// observed_at and sdk when absent, preserving generated IDs on the supplied maps so a
-// caller retrying the same slice sends the same event ids.
-func (c *Client) LogEvents(ctx context.Context, events []TraceEvent, environment ...string) (*BatchResult, error) {
-	if len(events) == 0 {
-		return &BatchResult{}, nil
-	}
-	if len(events) > 500 {
-		return nil, errors.New("prompton: LogEvents accepts at most 500 events")
-	}
-	env := c.cfg.Environment
-	if len(environment) > 0 && environment[0] != "" {
-		env = environment[0]
-	}
-	prepared := make([]map[string]interface{}, 0, len(events))
-	for i := range events {
-		if events[i] == nil {
-			return nil, fmt.Errorf("prompton: trace event %d must be an object", i)
-		}
-		if _, ok := events[i]["event_id"].(string); !ok || events[i]["event_id"] == "" {
-			events[i]["event_id"] = NewLogID()
-		}
-		if _, ok := events[i]["observed_at"].(string); !ok || events[i]["observed_at"] == "" {
-			events[i]["observed_at"] = c.cfg.now().UTC().Format("2006-01-02T15:04:05.000000Z")
-		}
-		if traceID, ok := events[i]["trace_id"].(string); !ok || traceID == "" {
-			return nil, fmt.Errorf("prompton: trace event %d needs trace_id", i)
-		}
-		kind, ok := events[i]["event_kind"].(string)
-		if !ok || !eventKinds[kind] {
-			return nil, fmt.Errorf("prompton: trace event %d has unsupported event_kind", i)
-		}
-		status, ok := events[i]["status"].(string)
-		if !ok || !eventStatuses[status] {
-			return nil, fmt.Errorf("prompton: trace event %d has unsupported status", i)
-		}
-		ensureEventSDK(events[i])
-		if isClosedTransportTraceEvent(events[i]) {
-			continue
-		}
-		prepared = append(prepared, events[i])
-	}
-	if len(prepared) == 0 {
-		return &BatchResult{}, nil
-	}
-	if c.cfg.APIKey == "" {
-		return nil, ErrNoAPIKey
-	}
-	return c.postEvents(ctx, env, prepared)
-}
-
-func ensureEventSDK(event map[string]interface{}) {
-	if _, ok := event["sdk"]; !ok {
-		event["sdk"] = map[string]interface{}{"name": SDKName, "version": Version}
-	}
-}
-
 func isClosedTransportLogRecord(rec *LogRecord) bool {
 	if rec.Status != StatusError || rec.Error == nil || rec.Error.Kind != ErrorKindTransport {
 		return false
@@ -263,34 +170,26 @@ func isClosedTransportLogRecord(rec *LogRecord) bool {
 	return isClosedTransportMessage(rec.Error.Message)
 }
 
-func isClosedTransportTraceEvent(event map[string]interface{}) bool {
-	if event["event_kind"] != EventKindCompletion || event["status"] != EventStatusError {
-		return false
-	}
-	message, _ := event["completion_output"].(string)
-	return isClosedTransportMessage(message) || message == "failed to call LLM: failed to send request: %Req.TransportError{reason: :closed}"
-}
-
 func isClosedTransportMessage(message string) bool {
 	return message == "%Req.TransportError{reason: :closed}" ||
 		message == "failed to send request: %Req.TransportError{reason: :closed}"
 }
 
-// policyFor is the use case's payload policy: the one carried by the use-case
+// policyFor is the prompt's payload policy: the one carried by the prompt
 // evidence if there is one, else the document's, else the client defaults.
 func (c *Client) policyFor(rec *LogRecord) *PayloadPolicy {
-	evidence := rec.useCaseResolution
-	if evidence == nil && rec.UseCaseEvidence != nil {
-		evidence = rec.UseCaseEvidence.useCaseResolution
+	evidence := rec.promptResolution
+	if evidence == nil && rec.PromptEvidence != nil {
+		evidence = rec.PromptEvidence.promptResolution
 	}
 	if evidence != nil && evidence.PayloadPolicy != nil {
 		return evidence.PayloadPolicy
 	}
-	entry := c.store.get(rec.UseCase)
+	entry := c.store.get(rec.Prompt)
 	if entry == nil {
 		return nil
 	}
-	if uc, ok := entry.snapshot.UseCases[rec.UseCase]; ok {
+	if uc, ok := entry.snapshot.Prompts[rec.Prompt]; ok {
 		return uc.PayloadPolicy
 	}
 	return nil
@@ -341,13 +240,13 @@ func (c *Client) ClearRecorded() {
 
 // Track times a provider call and logs it.
 //
-// Give it the use-case evidence, what you know about the call, and a function that
+// Give it the prompt evidence, what you know about the call, and a function that
 // actually talks to the provider. Whatever the function returns comes back
 // unchanged — including its error, which propagates after the failure is
 // logged. A panic is logged as an app error and re-panics.
 func (c *Client) trackResolved(
 	ctx context.Context,
-	res *useCaseResolution,
+	res *promptResolution,
 	meta CallMeta,
 	fn func(context.Context) (*Result, error),
 ) (*Result, error) {
@@ -381,18 +280,18 @@ func (c *Client) trackResolved(
 	return outcome, nil
 }
 
-func buildRecord(res *useCaseResolution, meta CallMeta, outcome *Result, callErr *CallError, startedAt time.Time, latencyMS int) LogRecord {
+func buildRecord(res *promptResolution, meta CallMeta, outcome *Result, callErr *CallError, startedAt time.Time, latencyMS int) LogRecord {
 	rec := LogRecord{
-		ID:                meta.ID,
-		useCaseResolution: res,
-		StartedAt:         startedAt,
-		LatencyMS:         latencyMS,
-		latencyMeasured:   true,
-		TraceID:           meta.TraceID,
-		Sequence:          meta.Sequence,
-		EndUserRef:        meta.EndUserRef,
-		Environment:       meta.Environment,
-		Status:            StatusOK,
+		ID:               meta.ID,
+		promptResolution: res,
+		StartedAt:        startedAt,
+		LatencyMS:        latencyMS,
+		latencyMeasured:  true,
+		TraceID:          meta.TraceID,
+		Sequence:         meta.Sequence,
+		EndUserRef:       meta.EndUserRef,
+		Environment:      meta.Environment,
+		Status:           StatusOK,
 	}
 	if meta.Context != nil {
 		rec.Context = meta.Context

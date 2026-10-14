@@ -18,13 +18,13 @@ func schema1ToolDocument(tools string, defaultParams string, messages string) st
 }
 
 func TestSchemaOneToolPromptMessagesAndParams(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(schema1ToolDocument(
+	snap, err := ParsePromptDocument([]byte(schema1ToolDocument(
 		`{"definitions":[{"type":"function","function":{"name":"search","parameters":{"type":"object","input_schema":{"type":"object"}}},"output_schema":{"type":"object"},"output_examples":[{"ok":true}]}],"tool_choice":"auto","parallel_tool_calls":false}`,
 		`{"temperature":0.2}`,
 		`[{"role":"system","content":"Hi {{ name }} {{ history }}"},{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search","arguments":"{}"}}]},{"role":"tool","tool_call_id":"call_1","content":[{"type":"text","text":"found"}],"reasoning":{"kept":true}}]`,
 	)))
 	if err != nil {
-		t.Fatalf("ParseUseCaseDocument: %v", err)
+		t.Fatalf("ParsePromptDocument: %v", err)
 	}
 	res, err := resolveSnapshot(snap, "chat", WithVariables(map[string]interface{}{"name": "Ada", "history": "summary"}))
 	if err != nil {
@@ -51,13 +51,13 @@ func TestSchemaOneToolPromptMessagesAndParams(t *testing.T) {
 }
 
 func TestSchemaOneToolParamConflict(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(schema1ToolDocument(
+	snap, err := ParsePromptDocument([]byte(schema1ToolDocument(
 		`{"definitions":[{"type":"function","function":{"name":"search","parameters":{"type":"object"}}}],"tool_choice":"auto"}`,
 		`{"tool_choice":"none"}`,
 		`[{"role":"user","content":"hi"}]`,
 	)))
 	if err != nil {
-		t.Fatalf("ParseUseCaseDocument: %v", err)
+		t.Fatalf("ParsePromptDocument: %v", err)
 	}
 	if _, err := resolveSnapshot(snap, "chat"); err == nil {
 		t.Fatal("resolveSnapshot should reject conflicting params.tool_choice")
@@ -71,7 +71,7 @@ func TestSchemaOneToolValidation(t *testing.T) {
 		"bad definition":      `{"definitions":["bad"]}`,
 		"missing parameters":  `{"definitions":[{"type":"function","function":{"name":"search"}}]}`,
 	} {
-		snap, err := ParseUseCaseDocument([]byte(schema1ToolDocument(tools, `{}`, `[{"role":"user","content":"hi"}]`)))
+		snap, err := ParsePromptDocument([]byte(schema1ToolDocument(tools, `{}`, `[{"role":"user","content":"hi"}]`)))
 		if err != nil {
 			t.Fatalf("%s parse: %v", name, err)
 		}
@@ -84,7 +84,7 @@ func TestSchemaOneToolValidation(t *testing.T) {
 func TestMessageSlotIsRejectedForRawAndLiquidPrompts(t *testing.T) {
 	for _, engine := range []string{"liquid", "raw"} {
 		doc := strings.Replace(schema1ToolDocument(`{"definitions":[]}`, `{}`, `[{"type":"slot","name":"history"}]`), `"engine":"liquid"`, `"engine":"`+engine+`"`, 1)
-		snap, err := ParseUseCaseDocument([]byte(doc))
+		snap, err := ParsePromptDocument([]byte(doc))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -96,7 +96,7 @@ func TestMessageSlotIsRejectedForRawAndLiquidPrompts(t *testing.T) {
 }
 
 func TestSchemaOneReadableReferencesResolveWithoutResourceIDs(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(`{
+	snap, err := ParsePromptDocument([]byte(`{
 		"schema_version":1,
 		"project":"p",
 		"environment":"staging",
@@ -106,7 +106,7 @@ func TestSchemaOneReadableReferencesResolveWithoutResourceIDs(t *testing.T) {
 		"models":{"openrouter:google/gemini-3.8-flash":{"provider":"openrouter","model":"google/gemini-3.8-flash","provider_options":{"only":["Google"]}},"anthropic:google/gemini-3.8-flash":{"provider":"anthropic","model":"google/gemini-3.8-flash","provider_options":{"routing":"direct"}}}
 	}`))
 	if err != nil {
-		t.Fatalf("ParseUseCaseDocument: %v", err)
+		t.Fatalf("ParsePromptDocument: %v", err)
 	}
 	support, err := resolveSnapshot(snap, "support_reply", WithVariables(map[string]interface{}{"question": "Ada"}))
 	if err != nil {
@@ -132,7 +132,7 @@ func TestSchemaOneReadableReferencesResolveWithoutResourceIDs(t *testing.T) {
 
 func TestSchemaOneCompositeKeysMustMatchEmbeddedFields(t *testing.T) {
 	valid := `{"schema_version":1,"prompts":{"chat":{"kind":"chat","variables":[]}},"deployments":{"chat":{"revision":"v","provider":"p","model":"m","prompt_version":2}},"models":{"p:m":{"provider":"p","model":"m"}},"prompt_versions":{"chat@2":{"prompt":"chat","number":2,"engine":"liquid","messages":[{"role":"user","content":"hi"}]}}}`
-	if _, err := ParseUseCaseDocument([]byte(valid)); err != nil {
+	if _, err := ParsePromptDocument([]byte(valid)); err != nil {
 		t.Fatalf("valid schema1 parse: %v", err)
 	}
 	cases := map[string]string{
@@ -141,7 +141,7 @@ func TestSchemaOneCompositeKeysMustMatchEmbeddedFields(t *testing.T) {
 		"old metadata":           strings.Replace(valid, `"variables":[]`, `"input_schema":[]`, 1),
 	}
 	for name, body := range cases {
-		if _, err := ParseUseCaseDocument([]byte(body)); err == nil {
+		if _, err := ParsePromptDocument([]byte(body)); err == nil {
 			t.Fatalf("%s should reject malformed schema1 document", name)
 		}
 	}
@@ -156,7 +156,7 @@ func TestSchemaOneRejectsLegacyResourceReferences(t *testing.T) {
 		"index response":    `{"schema_version":1,"project":"p","environment":"staging","prompts":[{"key":"chat","kind":"chat"}]}`,
 	}
 	for name, body := range cases {
-		if _, err := ParseUseCaseDocument([]byte(body)); err == nil {
+		if _, err := ParsePromptDocument([]byte(body)); err == nil {
 			t.Fatalf("expected legacy/index rejection for %s", name)
 		}
 	}

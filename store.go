@@ -10,14 +10,14 @@ import (
 	"time"
 )
 
-// The snapshot store keeps immutable documents per use case, plus one local
+// The snapshot store keeps immutable documents per prompt, plus one local
 // disk file and an optional bundled file. No database, no Redis, no shared
 // cache: instances never coordinate. Several processes on one host may share
 // the disk file: writes are atomic, readers tolerate a concurrent rename, and
 // a corrupt or partial file is ignored rather than raised.
 
 type snapshotEntry struct {
-	snapshot     *UseCaseDocument
+	snapshot     *PromptDocument
 	etag         string
 	lastModified string
 	source       Source
@@ -66,7 +66,7 @@ func (s *snapshotStore) putDocument(e *snapshotEntry) {
 	if s.entries == nil {
 		s.entries = map[string]*snapshotEntry{}
 	}
-	for key := range e.snapshot.UseCases {
+	for key := range e.snapshot.Prompts {
 		clone := *e
 		s.entries[key] = &clone
 	}
@@ -127,8 +127,8 @@ func (s *snapshotStore) lastAttempt(key string) time.Time {
 	return s.entries[key].lastAttempt
 }
 
-// UseCaseDocumentInfo describes the document resolution is currently reading.
-type UseCaseDocumentInfo struct {
+// PromptDocumentInfo describes the document resolution is currently reading.
+type PromptDocumentInfo struct {
 	// Source is remote, disk or bundle; empty when no document is loaded.
 	Source Source
 	// Project and Environment are the document's own, not the configuration's.
@@ -196,7 +196,7 @@ func readSnapshotFile(path, environment, project string) (*snapshotEntry, error)
 	if err != nil {
 		return nil, err
 	}
-	snap, err := ParseUseCaseDocument(data)
+	snap, err := ParsePromptDocument(data)
 	if err != nil {
 		return nil, err
 	}
@@ -222,7 +222,7 @@ func readSnapshotFile(path, environment, project string) (*snapshotEntry, error)
 // legacy bundle with no environment key is exactly the artefact a migration
 // produces, and accepting it in every process is the one thing that must never
 // happen.
-func guardDocument(snap *UseCaseDocument, environment, project string) error {
+func guardDocument(snap *PromptDocument, environment, project string) error {
 	if environment != "" && snap.Environment != environment {
 		return fmt.Errorf("prompton: snapshot is for environment %s, this process reads %q", documentLabel(snap.Environment), environment)
 	}

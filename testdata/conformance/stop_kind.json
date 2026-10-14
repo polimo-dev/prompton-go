@@ -137,7 +137,7 @@
   "description": "Normalization of a provider's raw finish_reason into PromptOn's stop_kind. Comparison is case-insensitive and trims surrounding whitespace; normalization is idempotent.",
   "format_version": 1,
   "generated_from": {
-    "commit": "b8abd0194cb5fadef445ca6fbc1fba72a819b83f",
+    "commit": "d478eb1e462f9516d568e8f0b0de2f86215e73b2",
     "language": "elixir",
     "repo": "https://github.com/polimo-dev/prompton-elixir",
     "sdk": "prompton_sdk",

@@ -232,9 +232,9 @@ func newTestClient(t *testing.T, cfg Config) *Client {
 
 func waitForRemoteSnapshot(t *testing.T, c *Client) {
 	t.Helper()
-	mustUseCase(t, c, "greeting")
-	if c.UseCaseDocumentInfo().Source != SourceRemote {
-		t.Fatalf("the first demand config fetch did not install a remote document: %+v", c.UseCaseDocumentInfo())
+	mustPrompt(t, c, "greeting")
+	if c.PromptDocumentInfo().Source != SourceRemote {
+		t.Fatalf("the first demand config fetch did not install a remote document: %+v", c.PromptDocumentInfo())
 	}
 }
 
@@ -269,7 +269,7 @@ func TestCustomConfigFetchClientIsCalledOnce(t *testing.T) {
 		configCacheTTL: time.Hour,
 		HTTPClient:     httpClient,
 	})
-	_, _ = c.UseCase(context.Background(), "greeting")
+	_, _ = c.Prompt(context.Background(), "greeting")
 	if got := atomic.LoadInt32(&calls); got != 1 {
 		t.Fatalf("SDK should make one config fetch attempt, got %d", got)
 	}
@@ -291,9 +291,9 @@ func TestSnapshotServedFromMemoryWithinTTL(t *testing.T) {
 	waitForRemoteSnapshot(t, c)
 
 	for i := 0; i < 50; i++ {
-		res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
-		if res.useCaseResolution.Messages[1].Content != "Say hello to Ada." {
-			t.Fatalf("unexpected rendering %q", res.useCaseResolution.Messages[1].Content)
+		res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+		if res.promptResolution.Messages[1].Content != "Say hello to Ada." {
+			t.Fatalf("unexpected rendering %q", res.promptResolution.Messages[1].Content)
 		}
 	}
 	if got := server.snapshotRequests(); got != 1 {
@@ -336,8 +336,8 @@ func TestSnapshotConcurrentSameKeySharesFetch(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			if _, err := c.UseCase(context.Background(), "greeting"); err != nil {
-				t.Errorf("UseCase: %v", err)
+			if _, err := c.Prompt(context.Background(), "greeting"); err != nil {
+				t.Errorf("Prompt: %v", err)
 			}
 		}()
 	}
@@ -384,24 +384,24 @@ func TestSnapshotConcurrentDifferentKeysFetchIndependently(t *testing.T) {
 
 	var wg sync.WaitGroup
 	start := make(chan struct{})
-	var greeting, other *UseCase
+	var greeting, other *Prompt
 	var greetingErr, otherErr error
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		<-start
-		greeting, greetingErr = c.UseCase(context.Background(), "greeting")
+		greeting, greetingErr = c.Prompt(context.Background(), "greeting")
 	}()
 	go func() {
 		defer wg.Done()
 		<-start
-		other, otherErr = c.UseCase(context.Background(), "demand_other")
+		other, otherErr = c.Prompt(context.Background(), "demand_other")
 	}()
 	close(start)
 	wg.Wait()
 
 	if greetingErr != nil || otherErr != nil {
-		t.Fatalf("UseCase errors: greeting=%v other=%v", greetingErr, otherErr)
+		t.Fatalf("Prompt errors: greeting=%v other=%v", greetingErr, otherErr)
 	}
 	if greeting.Model != "openai/gpt-4o-mini" || other.Model != "openai/other-model" {
 		t.Fatalf("models: greeting=%q other=%q", greeting.Model, other.Model)
@@ -434,8 +434,8 @@ func TestPerKeyDiskCacheSurvivesRestartWithIndependentDocuments(t *testing.T) {
 		DiskCachePath:  diskPath,
 		configCacheTTL: time.Hour,
 	})
-	greeting := mustUseCase(t, first, "greeting")
-	other := mustUseCase(t, first, "demand_other")
+	greeting := mustPrompt(t, first, "greeting")
+	other := mustPrompt(t, first, "demand_other")
 	if greeting.Model != "openai/gpt-4o-mini" || other.Model != "openai/other-model" {
 		t.Fatalf("initial models: greeting=%q other=%q", greeting.Model, other.Model)
 	}
@@ -450,8 +450,8 @@ func TestPerKeyDiskCacheSurvivesRestartWithIndependentDocuments(t *testing.T) {
 		Timeout:        20 * time.Millisecond,
 		configCacheTTL: time.Hour,
 	})
-	greeting = mustUseCase(t, restarted, "greeting")
-	other = mustUseCase(t, restarted, "demand_other")
+	greeting = mustPrompt(t, restarted, "greeting")
+	other = mustPrompt(t, restarted, "demand_other")
 	if greeting.Source != SourceDisk || other.Source != SourceDisk {
 		t.Fatalf("restart sources: greeting=%q other=%q", greeting.Source, other.Source)
 	}
@@ -480,9 +480,9 @@ func TestSnapshotOtherKeyDoesNotMutateFreshConfig(t *testing.T) {
 		CacheTTL:       time.Hour,
 		configCacheTTL: time.Hour,
 	})
-	greeting := mustUseCase(t, c, "greeting")
-	other := mustUseCase(t, c, "demand_other")
-	greetingAgain := mustUseCase(t, c, "greeting")
+	greeting := mustPrompt(t, c, "greeting")
+	other := mustPrompt(t, c, "demand_other")
+	greetingAgain := mustPrompt(t, c, "greeting")
 	if greeting.Model != "openai/gpt-4o-mini" || greetingAgain.Model != greeting.Model {
 		t.Fatalf("other key fetch mutated greeting config: first=%q later=%q", greeting.Model, greetingAgain.Model)
 	}
@@ -502,13 +502,13 @@ func TestSnapshotRepollsWithIfNoneMatch(t *testing.T) {
 	})
 	waitForRemoteSnapshot(t, c)
 	time.Sleep(25 * time.Millisecond)
-	mustUseCase(t, c, "greeting")
+	mustPrompt(t, c, "greeting")
 	// A 304 changes nothing: the document and its ETag stay put.
-	info := c.UseCaseDocumentInfo()
+	info := c.PromptDocumentInfo()
 	if info.ETag == "" || info.Source != SourceRemote || info.Stale {
 		t.Fatalf("unexpected snapshot info after a 304: %+v", info)
 	}
-	mustUseCase(t, c, "greeting")
+	mustPrompt(t, c, "greeting")
 }
 
 func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
@@ -527,14 +527,14 @@ func TestSnapshotRateLimitHonoursRetryAfter(t *testing.T) {
 	server.queueSnapshotStatuses("60", 429, 429, 429)
 
 	clock.Advance(6 * time.Millisecond)
-	mustUseCase(t, c, "greeting")
+	mustPrompt(t, c, "greeting")
 	before := server.snapshotRequests()
 	time.Sleep(80 * time.Millisecond)
 	if after := server.snapshotRequests(); after > before+1 {
 		t.Fatalf("kept polling through Retry-After: %d then %d requests", before, after)
 	}
 	// The caller never sees the rate limit.
-	if _, err := c.UseCase(testContext(t), "greeting"); err != nil {
+	if _, err := c.Prompt(testContext(t), "greeting"); err != nil {
 		t.Fatalf("resolve failed while rate limited: %v", err)
 	}
 }
@@ -552,8 +552,8 @@ func TestSnapshotServerErrorKeepsServingPreviousDocument(t *testing.T) {
 	server.queueSnapshotStatuses("", 500, 500, 500, 503)
 
 	time.Sleep(6 * time.Millisecond)
-	mustUseCase(t, c, "greeting")
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	mustPrompt(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Model != "openai/gpt-4o-mini" {
 		t.Fatalf("stale document did not resolve: %+v", res)
 	}
@@ -585,16 +585,16 @@ func TestSlowCustomConfigFetchFallsBackAfterOneSecondAndCannotLateOverwrite(t *t
 	})
 
 	started := time.Now()
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if elapsed := time.Since(started); elapsed > 1150*time.Millisecond {
 		t.Fatalf("config fetch did not fall back after 1s budget: %s", elapsed)
 	}
-	if got := res.useCaseResolution.Messages[1].Content; got != "Bundle Ada" {
+	if got := res.promptResolution.Messages[1].Content; got != "Bundle Ada" {
 		t.Fatalf("initial fallback = %q", got)
 	}
 	time.Sleep(350 * time.Millisecond)
-	res = mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
-	if got := res.useCaseResolution.Messages[1].Content; got != "Bundle Ada" {
+	res = mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if got := res.promptResolution.Messages[1].Content; got != "Bundle Ada" {
 		t.Fatalf("late fetch overwrote cache with %q", got)
 	}
 	if got := atomic.LoadInt32(&calls); got != 1 {
@@ -617,7 +617,7 @@ func TestSnapshotServerDownFallsBackToDisk(t *testing.T) {
 		configCacheTTL: time.Hour,
 		Timeout:        100 * time.Millisecond,
 	})
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Source != SourceDisk {
 		t.Fatalf("source %q, want disk", res.Source)
 	}
@@ -635,7 +635,7 @@ func TestSnapshotBundleUsedWhenDiskIsEmpty(t *testing.T) {
 		BundlePath:    bundle,
 		Timeout:       100 * time.Millisecond,
 	})
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 	if res.Source != SourceBundle {
 		t.Fatalf("source %q, want bundle", res.Source)
 	}
@@ -665,7 +665,7 @@ func TestSnapshotFromAnotherEnvironmentIsRefused(t *testing.T) {
 				DisableDiskCache: true,
 				Timeout:          100 * time.Millisecond,
 			})
-			if _, err := c.UseCase(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+			if _, err := c.Prompt(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
 				t.Fatalf("the document must not boot a production process, got %v", err)
 			}
 		})
@@ -684,7 +684,7 @@ func TestSnapshotFromAnotherProjectIsRefused(t *testing.T) {
 		DisableDiskCache: true,
 		Timeout:          100 * time.Millisecond,
 	})
-	if _, err := c.UseCase(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+	if _, err := c.Prompt(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("a document from another project must not be used, got %v", err)
 	}
 }
@@ -702,13 +702,13 @@ func TestCorruptDiskCacheIsIgnored(t *testing.T) {
 		BundlePath:    bundle,
 		Timeout:       100 * time.Millisecond,
 	})
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 	if res.Source != SourceBundle {
 		t.Fatalf("a half-written disk cache must fall through to the bundle, got %q", res.Source)
 	}
 }
 
-func TestExportUseCaseDocumentWritesSnapshotAtomically(t *testing.T) {
+func TestExportPromptDocumentWritesSnapshotAtomically(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	dir := t.TempDir()
 	diskPath := filepath.Join(dir, "nested", "snapshot.json")
@@ -720,8 +720,8 @@ func TestExportUseCaseDocumentWritesSnapshotAtomically(t *testing.T) {
 		CacheTTL:      time.Hour,
 	})
 	waitForRemoteSnapshot(t, c)
-	if err := c.ExportUseCaseDocument(diskPath); err != nil {
-		t.Fatalf("ExportUseCaseDocument: %v", err)
+	if err := c.ExportPromptDocument(diskPath); err != nil {
+		t.Fatalf("ExportPromptDocument: %v", err)
 	}
 
 	body, err := os.ReadFile(diskPath)
@@ -765,8 +765,8 @@ func TestSchema1SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T)
 		CacheTTL:       time.Hour,
 		configCacheTTL: time.Hour,
 	})
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
-	if res.Model != "openai/gpt-4o-mini" || res.useCaseResolution.Messages[0].Content != "Say hello to Ada." {
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if res.Model != "openai/gpt-4o-mini" || res.promptResolution.Messages[0].Content != "Say hello to Ada." {
 		t.Fatalf("schema1 prompt did not resolve/render: %+v", res)
 	}
 	cached, err := os.ReadFile(keySnapshotPath(diskPath, "greeting"))
@@ -777,8 +777,8 @@ func TestSchema1SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T)
 		t.Fatal("per-key cache must preserve the schema1 response bytes unchanged")
 	}
 	out := filepath.Join(dir, "bundle.json")
-	if err := c.ExportUseCaseDocument(out); err != nil {
-		t.Fatalf("ExportUseCaseDocument: %v", err)
+	if err := c.ExportPromptDocument(out); err != nil {
+		t.Fatalf("ExportPromptDocument: %v", err)
 	}
 	exported, err := os.ReadFile(out)
 	if err != nil {
@@ -796,7 +796,7 @@ func TestSchema1SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T)
 		DisableDiskCache: true,
 		Timeout:          20 * time.Millisecond,
 	})
-	if got := mustUseCase(t, restarted, "greeting", WithVariables(map[string]interface{}{"name": "Ada"})).useCaseResolution.Messages[0].Content; got != "Say hello to Ada." {
+	if got := mustPrompt(t, restarted, "greeting", WithVariables(map[string]interface{}{"name": "Ada"})).promptResolution.Messages[0].Content; got != "Say hello to Ada." {
 		t.Fatalf("reloaded schema1 bundle rendered %q", got)
 	}
 }
@@ -812,7 +812,7 @@ func TestNoAPIKeyMakesNoRemoteCalls(t *testing.T) {
 		BundlePath:       bundle,
 		DisableDiskCache: true,
 	})
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 	if res.Source != SourceBundle {
 		t.Fatalf("without an API key the SDK must work from the bundle, got %q", res.Source)
 	}
@@ -839,7 +839,7 @@ func TestOfflineModeNeverCallsTheServer(t *testing.T) {
 		Mode:          ModeOffline,
 		DiskCachePath: diskPath,
 	})
-	res := mustUseCase(t, c, "greeting")
+	res := mustPrompt(t, c, "greeting")
 	if res.Source != SourceDisk {
 		t.Fatalf("offline mode must read the disk cache, got %q", res.Source)
 	}
@@ -863,22 +863,22 @@ func TestOfflineModeNeverCallsTheServer(t *testing.T) {
 
 func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 	c := newTestClient(t, Config{Mode: ModeTest, Environment: "production"})
-	if _, err := c.UseCase(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
+	if _, err := c.Prompt(testContext(t), "greeting"); !errors.Is(err, ErrNotReady) {
 		t.Fatalf("an empty test client should report not ready, got %v", err)
 	}
-	if err := c.SetUseCaseDocument([]byte(testSnapshotJSON)); err != nil {
-		t.Fatalf("SetUseCaseDocument: %v", err)
+	if err := c.SetPromptDocument([]byte(testSnapshotJSON)); err != nil {
+		t.Fatalf("SetPromptDocument: %v", err)
 	}
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Source != SourceManual {
 		t.Fatalf("an injected document is source manual, got %q", res.Source)
 	}
 	if err := c.Log(LogRecord{
-		UseCaseEvidence: res,
-		Status:          StatusOK,
-		StartedAt:       time.Now(),
-		Input:           &Input{Variables: map[string]interface{}{"name": "Ada"}},
-		Output:          &Output{Content: "Hello, Ada!"},
+		PromptEvidence: res,
+		Status:         StatusOK,
+		StartedAt:      time.Now(),
+		Input:          &Input{Variables: map[string]interface{}{"name": "Ada"}},
+		Output:         &Output{Content: "Hello, Ada!"},
 	}); err != nil {
 		t.Fatalf("log: %v", err)
 	}
@@ -898,7 +898,7 @@ func TestTestModeCapturesLogsAndUsesInjectedSnapshot(t *testing.T) {
 	}
 }
 
-func TestExportUseCaseDocumentProducesALoadableBundle(t *testing.T) {
+func TestExportPromptDocumentProducesALoadableBundle(t *testing.T) {
 	server := newSnapshotServer(t, testSnapshotJSON)
 	c := newTestClient(t, Config{
 		Host:           server.URL,
@@ -909,9 +909,9 @@ func TestExportUseCaseDocumentProducesALoadableBundle(t *testing.T) {
 	})
 	waitForRemoteSnapshot(t, c)
 
-	out := filepath.Join(t.TempDir(), "prompton", "use-cases.production.json")
-	if err := c.ExportUseCaseDocument(out); err != nil {
-		t.Fatalf("ExportUseCaseDocument: %v", err)
+	out := filepath.Join(t.TempDir(), "prompton", "prompts.production.json")
+	if err := c.ExportPromptDocument(out); err != nil {
+		t.Fatalf("ExportPromptDocument: %v", err)
 	}
 	entry, err := readSnapshotFile(out, "production", "sdkfixture")
 	if err != nil {
@@ -929,27 +929,27 @@ func TestSchemaVersionReadsOnlyOne(t *testing.T) {
 		version int
 		missing bool
 	}{
-		{name: "missing", body: `{"use_cases":{}}`, missing: true},
-		{name: "v3", body: `{"schema_version":3,"use_cases":{}}`, version: 3},
-		{name: "future", body: `{"schema_version":10,"use_cases":{}}`, version: 10},
+		{name: "missing", body: `{"prompts":{}}`, missing: true},
+		{name: "v3", body: `{"schema_version":3,"prompts":{}}`, version: 3},
+		{name: "future", body: `{"schema_version":10,"prompts":{}}`, version: 10},
 	}
 	for _, tc := range cases {
-		_, err := ParseUseCaseDocument([]byte(tc.body))
+		_, err := ParsePromptDocument([]byte(tc.body))
 		var schemaErr *UnsupportedSchemaError
 		if !errors.As(err, &schemaErr) || schemaErr.Version != tc.version || schemaErr.Missing != tc.missing {
 			t.Fatalf("%s: schema_version must be refused exactly, got %v", tc.name, err)
 		}
 	}
 
-	if _, err := ParseUseCaseDocument([]byte(`{"schema_version":1,"prompts":{},"deployments":{},"prompt_versions":{},"models":{}}`)); err != nil {
+	if _, err := ParsePromptDocument([]byte(`{"schema_version":1,"prompts":{},"deployments":{},"prompt_versions":{},"models":{}}`)); err != nil {
 		t.Fatalf("schema_version 1 should be accepted: %v", err)
 	}
 }
 
 func TestSchema1SinglePromptResponseNormalizesToReadableDocument(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(schema1PromptJSON("support_reply")))
+	snap, err := ParsePromptDocument([]byte(schema1PromptJSON("support_reply")))
 	if err != nil {
-		t.Fatalf("ParseUseCaseDocument: %v", err)
+		t.Fatalf("ParsePromptDocument: %v", err)
 	}
 	res, err := resolveSnapshot(snap, "support_reply", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if err != nil {
@@ -970,11 +970,11 @@ func TestSchema1SinglePromptResponseNormalizesToReadableDocument(t *testing.T) {
 }
 
 func TestSchema1DecisionResponsePreservesNativeDecisionPayload(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(schema1DecisionJSON()))
+	snap, err := ParsePromptDocument([]byte(schema1DecisionJSON()))
 	if err != nil {
-		t.Fatalf("ParseUseCaseDocument: %v", err)
+		t.Fatalf("ParsePromptDocument: %v", err)
 	}
-	if got := snap.UseCases["decision_triage"].Kind; got != KindDecision {
+	if got := snap.Prompts["decision_triage"].Kind; got != KindDecision {
 		t.Fatalf("kind %q", got)
 	}
 	version := snap.PromptVersions["decision_triage@1"]
@@ -1015,7 +1015,7 @@ func TestSchema1RejectsMixedOrInconsistentSinglePromptShapes(t *testing.T) {
 		}),
 	}
 	for name, body := range cases {
-		if _, err := ParseUseCaseDocument([]byte(body)); err == nil {
+		if _, err := ParsePromptDocument([]byte(body)); err == nil {
 			t.Fatalf("%s should fail", name)
 		}
 	}
@@ -1101,8 +1101,8 @@ func TestSnapshotFetchUsesCurrentPromptEndpointAndDocumentShape(t *testing.T) {
 		CacheTTL: time.Hour, configCacheTTL: time.Hour,
 	})
 	waitForRemoteSnapshot(t, c)
-	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
-	if res.Model != "openai/gpt-4o-mini" || len(res.PromptNames) == 0 {
+	res := mustPrompt(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if res.Model != "openai/gpt-4o-mini" || len(res.TemplateNames) == 0 {
 		t.Fatalf("unexpected current prompt fixture resolution: %+v", res)
 	}
 }

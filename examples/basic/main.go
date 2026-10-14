@@ -1,4 +1,4 @@
-// Command basic shows the whole PromptOn loop: resolve a use case, render the
+// Command basic shows the whole PromptOn loop: resolve a prompt, render the
 // pinned prompt, call a provider, log what happened.
 //
 // The "provider" here is a local stand-in, because PromptOn never calls your
@@ -25,7 +25,7 @@ import (
 	prompton "github.com/polimo-dev/prompton-go"
 )
 
-const useCase = "greeting"
+const prompt = "greeting"
 
 func main() {
 	ctx := context.Background()
@@ -36,7 +36,7 @@ func main() {
 		// The bundle is the cold-start fallback: committed at migration time and
 		// refreshed by the build, it means a process with no disk cache and no
 		// network still resolves.
-		BundlePath: filepath.Join("examples", "basic", "use-cases.production.json"),
+		BundlePath: filepath.Join("examples", "basic", "prompts.production.json"),
 	}
 	if os.Getenv("PTN_API_KEY") == "" {
 		// Without a key the SDK makes no remote calls at all and works from the
@@ -62,16 +62,16 @@ func main() {
 		waitForRemote(client)
 	}
 
-	variables := map[string]interface{}{"name": "Ada"}
+	variables := map[string]interface{}{"name": "Ada", "language": "en"}
 
-	res, err := client.UseCase(ctx, useCase, prompton.WithVariables(variables))
+	res, err := client.Prompt(ctx, prompt, prompton.WithVariables(variables))
 	if err != nil {
-		log.Fatalf("resolve %s: %v", useCase, err)
+		log.Fatalf("resolve %s: %v", prompt, err)
 	}
 
-	fmt.Printf("use case      %s (%s)\n", res.Key, res.Kind)
-	fmt.Printf("revision      %s\n", res.DeploymentRevision)
-	fmt.Printf("prompt        %s (version %d of %v)\n", res.Prompt, res.PromptVersionNumber, res.PromptNames)
+	fmt.Printf("prompt      %s (%s)\n", res.Key, res.Kind)
+	fmt.Printf("revision    %s\n", res.DeploymentRevision)
+	fmt.Printf("template      %s (version %d of %v)\n", res.Template, res.PromptVersionNumber, res.TemplateNames)
 	fmt.Printf("model         %s via %s\n", res.Model, res.Provider)
 	fmt.Printf("params        %v\n", res.Params)
 	fmt.Printf("config from   %s\n\n", res.Source)
@@ -147,7 +147,7 @@ func fakeProvider(ctx context.Context, model string, messages []prompton.Message
 func waitForRemote(client *prompton.Client) {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if client.UseCaseDocumentInfo().Source == prompton.SourceRemote {
+		if client.PromptDocumentInfo().Source == prompton.SourceRemote {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)

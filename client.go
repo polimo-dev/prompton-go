@@ -64,7 +64,7 @@ const configFetchBudget = time.Second
 
 // New builds a client and loads whatever configuration is already on hand:
 // memory, then the disk cache, then the bundle. New never contacts PromptOn;
-// live configuration is fetched on demand for the specific use case being
+// live configuration is fetched on demand for the specific prompt being
 // resolved.
 func New(cfg Config) (*Client, error) {
 	resolved, err := cfg.withDefaults()
@@ -127,7 +127,7 @@ func (c *Client) loadLocal() {
 				if entry.fetchedAt.IsZero() {
 					entry.fetchedAt = c.cfg.now()
 				}
-				for key := range entry.snapshot.UseCases {
+				for key := range entry.snapshot.Prompts {
 					c.store.put(key, entry)
 				}
 			}
@@ -184,7 +184,7 @@ func (c *Client) warnOnce(key, format string, args ...interface{}) {
 // resolution
 
 // Resolve answers "what should this call use" from the cached document for
-// this use case. In live mode it first gives that key one bounded chance to
+// this prompt. In live mode it first gives that key one bounded chance to
 // refresh when the cache is missing or stale; failures fall back to the last
 // cached value.
 //
@@ -194,23 +194,23 @@ func (c *Client) warnOnce(key, format string, args ...interface{}) {
 // WithEnvironment is refused here rather than ignored: this client holds one
 // environment's document, and answering a staging call from the production pin
 // is precisely the accident the environment guard exists to prevent. Use
-// RemoteUseCase, or a second client, for another environment.
-func (c *Client) resolve(ctx context.Context, useCase string, opts ...UseCaseOption) (*useCaseResolution, error) {
+// RenderPrompt, or a second client, for another environment.
+func (c *Client) resolve(ctx context.Context, prompt string, opts ...PromptOption) (*promptResolution, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if env := buildResolveOptions(opts).Environment; env != "" && env != c.cfg.Environment {
-		return nil, environmentMismatch(useCase, env, c.cfg.Environment)
+		return nil, environmentMismatch(prompt, env, c.cfg.Environment)
 	}
 	if c.cfg.Mode == ModeLive && c.cfg.APIKey != "" {
-		_ = c.ensurePromptFresh(ctx, useCase)
+		_ = c.ensurePromptFresh(ctx, prompt)
 	}
-	entry := c.store.get(useCase)
+	entry := c.store.get(prompt)
 	if entry == nil {
 		// Nothing anywhere: this is the one case where resolution fails.
 		return nil, ErrNotReady
 	}
-	res, err := resolveSnapshot(entry.snapshot, useCase, opts...)
+	res, err := resolveSnapshot(entry.snapshot, prompt, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -219,20 +219,20 @@ func (c *Client) resolve(ctx context.Context, useCase string, opts ...UseCaseOpt
 	return res, nil
 }
 
-// PromptNames lists the prompt names the live revision of a use case pins. It
-// is exactly the set of values WithPrompt accepts.
-func (c *Client) PromptNames(useCase string) ([]string, error) {
+// TemplateNames lists the template names the live revision of a prompt pins. It
+// is exactly the set of values WithTemplate accepts.
+func (c *Client) TemplateNames(prompt string) ([]string, error) {
 	if c.cfg.Mode == ModeLive && c.cfg.APIKey != "" {
-		_ = c.ensurePromptFresh(context.Background(), useCase)
+		_ = c.ensurePromptFresh(context.Background(), prompt)
 	}
-	entry := c.store.get(useCase)
+	entry := c.store.get(prompt)
 	if entry == nil {
 		return nil, ErrNotReady
 	}
-	if _, ok := entry.snapshot.UseCases[useCase]; !ok {
-		return nil, &UseCaseError{Code: "unknown_use_case", UseCase: useCase}
+	if _, ok := entry.snapshot.Prompts[prompt]; !ok {
+		return nil, &PromptError{Code: "unknown_template", Prompt: prompt}
 	}
-	return entry.snapshot.PromptNames(useCase), nil
+	return entry.snapshot.TemplateNames(prompt), nil
 }
 
 func (c *Client) isStale(entry *snapshotEntry) bool {
@@ -323,7 +323,7 @@ func (c *Client) fetchPrompt(key string, started, deadline time.Time, timeout ti
 		c.store.markFresh(key, SourceRemote, now)
 		return nil
 	case 200:
-		snap, parseErr := ParseUseCaseDocument(resp.Body)
+		snap, parseErr := ParsePromptDocument(resp.Body)
 		if parseErr != nil {
 			c.store.markStale(key, now)
 			return parseErr
@@ -332,9 +332,9 @@ func (c *Client) fetchPrompt(key string, started, deadline time.Time, timeout ti
 			c.store.markStale(key, now)
 			return guardErr
 		}
-		if _, ok := snap.UseCases[key]; !ok {
+		if _, ok := snap.Prompts[key]; !ok {
 			c.store.markStale(key, now)
-			return fmt.Errorf("prompton: config fetch for %s returned a document without that use case", key)
+			return fmt.Errorf("prompton: config fetch for %s returned a document without that prompt", key)
 		}
 		if reqCtx.Err() != nil || time.Now().After(deadline) {
 			c.store.markStale(key, now)
@@ -359,13 +359,13 @@ func (c *Client) fetchPrompt(key string, started, deadline time.Time, timeout ti
 	}
 }
 
-// UseCaseDocumentInfo reports which document resolution is reading and how old it is.
-func (c *Client) UseCaseDocumentInfo() UseCaseDocumentInfo {
+// PromptDocumentInfo reports which document resolution is reading and how old it is.
+func (c *Client) PromptDocumentInfo() PromptDocumentInfo {
 	entry := c.store.any()
 	if entry == nil {
-		return UseCaseDocumentInfo{}
+		return PromptDocumentInfo{}
 	}
-	return UseCaseDocumentInfo{
+	return PromptDocumentInfo{
 		Source:       entry.source,
 		Project:      entry.snapshot.Project,
 		Environment:  entry.snapshot.Environment,
@@ -378,8 +378,8 @@ func (c *Client) UseCaseDocumentInfo() UseCaseDocumentInfo {
 	}
 }
 
-// UseCaseDocument returns the document resolution is currently reading, or nil.
-func (c *Client) UseCaseDocument() *UseCaseDocument {
+// PromptDocument returns the document resolution is currently reading, or nil.
+func (c *Client) PromptDocument() *PromptDocument {
 	entry := c.store.any()
 	if entry == nil {
 		return nil
@@ -387,11 +387,11 @@ func (c *Client) UseCaseDocument() *UseCaseDocument {
 	return entry.snapshot
 }
 
-// SetUseCaseDocument installs a document by hand, reported as source
+// SetPromptDocument installs a document by hand, reported as source
 // "manual". It is how test mode is seeded, and how a script pins a known
 // configuration.
-func (c *Client) SetUseCaseDocument(data []byte) error {
-	snap, err := ParseUseCaseDocument(data)
+func (c *Client) SetPromptDocument(data []byte) error {
+	snap, err := ParsePromptDocument(data)
 	if err != nil {
 		return err
 	}
@@ -399,19 +399,19 @@ func (c *Client) SetUseCaseDocument(data []byte) error {
 	return nil
 }
 
-// SetUseCaseDocumentFile installs a document from a file.
-func (c *Client) SetUseCaseDocumentFile(path string) error {
+// SetPromptDocumentFile installs a document from a file.
+func (c *Client) SetPromptDocumentFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
-	return c.SetUseCaseDocument(data)
+	return c.SetPromptDocument(data)
 }
 
-// ExportUseCaseDocument writes the current document and its sidecar to path, which is
+// ExportPromptDocument writes the current document and its sidecar to path, which is
 // how a bundle is built: run it in CI and commit the result so a cold start
 // with no disk cache and no network still resolves.
-func (c *Client) ExportUseCaseDocument(path string) error {
+func (c *Client) ExportPromptDocument(path string) error {
 	entry := c.store.any()
 	if entry == nil {
 		return ErrNotReady
@@ -429,7 +429,7 @@ func (c *Client) ExportUseCaseDocument(path string) error {
 // refresh
 
 // Refresh is a compatibility no-op. Runtime lookup refreshes only the requested
-// key through UseCase/PromptNames, and bundle tooling should use ExportUseCaseDocument
+// key through Prompt/TemplateNames, and bundle tooling should use ExportPromptDocument
 // with the document already cached by those key lookups.
 func (c *Client) Refresh(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
@@ -438,13 +438,13 @@ func (c *Client) Refresh(ctx context.Context) error {
 	if c.cfg.Mode == ModeOffline {
 		c.loadLocal()
 	}
-	// Runtime refresh is demand-driven through UseCase/PromptNames so a no-arg
-	// live refresh must not bulk-fetch all prompts. ExportUseCaseDocument writes
+	// Runtime refresh is demand-driven through Prompt/TemplateNames so a no-arg
+	// live refresh must not bulk-fetch all prompts. ExportPromptDocument writes
 	// the currently cached document for explicit bundle tooling.
 	return nil
 }
 
-func (c *Client) persistKeyDisk(key string, snap *UseCaseDocument, resp *snapshotResponse, fetchedAt time.Time) {
+func (c *Client) persistKeyDisk(key string, snap *PromptDocument, resp *snapshotResponse, fetchedAt time.Time) {
 	if c.cfg.DisableDiskCache || c.cfg.DiskCachePath == "" {
 		return
 	}
@@ -464,19 +464,19 @@ func (c *Client) persistKeyDisk(key string, snap *UseCaseDocument, resp *snapsho
 // ---------------------------------------------------------------------------
 // prompt endpoint
 
-// RemoteUseCase asks the server to resolve, which is the simple path and the
+// RenderPrompt asks the server to resolve, which is the simple path and the
 // smoke test for a deployment. It is not for a hot loop: the answer is cached
-// for the same TTL as the snapshot, per use case, prompt and environment, and
+// for the same TTL as the snapshot, per prompt, prompt and environment, and
 // variables are rendered locally against that cached template. When the server
 // rate limits, fails or is unreachable, the cached answer is served.
-func (c *Client) RemoteUseCase(ctx context.Context, useCase string, opts ...UseCaseOption) (*UseCase, error) {
+func (c *Client) RenderPrompt(ctx context.Context, prompt string, opts ...PromptOption) (*Prompt, error) {
 	o := buildResolveOptions(opts)
 	env := o.Environment
 	if env == "" {
 		env = c.cfg.Environment
 	}
-	prompt := o.Prompt
-	key := env + "\x00" + useCase + "\x00" + prompt
+	template := o.Template
+	key := env + "\x00" + prompt + "\x00" + template
 
 	c.resolveMu.Lock()
 	cached, hasCached := c.resolveCache[key]
@@ -489,14 +489,14 @@ func (c *Client) RemoteUseCase(ctx context.Context, useCase string, opts ...UseC
 		response = cached.response
 	default:
 		fetched, err := c.postResolve(ctx, resolveRequest{
-			UseCase:     useCase,
-			Environment: env,
 			Prompt:      prompt,
+			Environment: env,
+			Template:    template,
 		})
 		if err != nil {
 			var apiErr *APIError
 			if errors.As(err, &apiErr) && apiErr.Status >= 400 && apiErr.Status < 500 && apiErr.Status != 429 {
-				return nil, useCaseErrorFromAPI(useCase, apiErr)
+				return nil, promptErrorFromAPI(prompt, apiErr)
 			}
 			if hasCached {
 				c.warnOnce("resolve-remote", "prompt endpoint failed (%v); serving the cached answer", err)
@@ -512,22 +512,22 @@ func (c *Client) RemoteUseCase(ctx context.Context, useCase string, opts ...UseC
 		}
 	}
 
-	res := resolutionFromResponse(useCase, response)
+	res := resolutionFromResponse(prompt, response)
 	if o.Variables != nil {
 		if err := renderInto(res, o.Variables); err != nil {
 			return nil, err
 		}
 	}
-	return newUseCase(c, res), nil
+	return newPrompt(c, res), nil
 }
 
-func resolutionFromResponse(useCase string, r *resolveResponse) *useCaseResolution {
-	res := &useCaseResolution{
-		UseCase:            useCase,
+func resolutionFromResponse(prompt string, r *resolveResponse) *promptResolution {
+	res := &promptResolution{
+		Prompt:             prompt,
 		Kind:               Kind(r.Kind),
 		DeploymentID:       r.Deployment.ID,
 		DeploymentRevision: r.Deployment.Revision,
-		PromptNames:        r.PromptNames,
+		TemplateNames:      r.TemplateNames,
 		Params:             r.Params,
 		Tools:              r.Tools,
 		ProviderOptions:    r.ProviderOptions,
@@ -539,11 +539,11 @@ func resolutionFromResponse(useCase string, r *resolveResponse) *useCaseResoluti
 	if r.Source != "" {
 		res.Source = Source(r.Source)
 	}
-	if res.PromptNames == nil {
-		res.PromptNames = []string{}
+	if res.TemplateNames == nil {
+		res.TemplateNames = []string{}
 	}
-	if r.Prompt != nil {
-		res.Prompt = *r.Prompt
+	if r.Template != nil {
+		res.Template = *r.Template
 	}
 	if r.Model != nil {
 		res.Model = *r.Model
