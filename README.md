@@ -21,10 +21,10 @@ UseCase ──▶ {Model, Params, ProviderOptions, DeploymentID, Prompt, …}
 
 ## Install
 
-The module is not on a registry yet, so depend on the repository:
+Install the v0.6.0 GitHub source release:
 
 ```sh
-go get github.com/polimo-dev/prompton-go@latest
+go get github.com/polimo-dev/prompton-go@v0.6.0
 ```
 
 ```go
