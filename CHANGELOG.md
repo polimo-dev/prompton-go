@@ -4,6 +4,14 @@ All notable changes to this SDK are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.1
+
+- Added support for schema9 flat single-prompt responses from `GET /api/v1/prompts/{key}`.
+  The decoder validates the singular `prompt`, `deployment`, `prompt_version` and `model`
+  identities, normalizes them to the existing readable prompt document view, and preserves the
+  original response bytes for ETags, disk cache and bundle export.
+- Bulk prompt documents remain schema8 keyed maps.
+
 ## 0.7.0
 
 - Added schema8 prompt documents with readable resource references. Config now resolves

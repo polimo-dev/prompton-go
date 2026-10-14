@@ -9,8 +9,9 @@ import (
 
 // SchemaVersion is the newest use-case document schema this SDK reads. A deployment revision is
 // a pin — one model plus one pinned prompt version per prompt name — not a
-// router: schema 8 replaces public resource UUID references with readable keys.
-const SchemaVersion = 8
+// router: schema 8 replaces public resource UUID references with readable keys,
+// and schema 9 is the flat single-prompt endpoint shape normalized at decode.
+const SchemaVersion = 9
 
 // Kind is what a use case calls: a chat completion, a text completion, or an
 // embedding.
@@ -231,6 +232,15 @@ type rawUseCaseDocument struct {
 	Deployments    map[string]*Deployment      `json:"deployments"`
 	PromptVersions map[string]*PromptVersion   `json:"prompt_versions"`
 	Models         map[string]*Model           `json:"models"`
+	Prompt         *singlePrompt               `json:"prompt"`
+	Deployment     *Deployment                 `json:"deployment"`
+	PromptVersion  *PromptVersion              `json:"prompt_version"`
+	Model          *Model                      `json:"model"`
+}
+
+type singlePrompt struct {
+	Key string `json:"key"`
+	*DocumentUseCase
 }
 
 // UnsupportedSchemaError is returned for any document whose schema_version is
@@ -259,6 +269,11 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 	version := *raw.SchemaVersion
 	if version < 4 || version > SchemaVersion {
 		return nil, &UnsupportedSchemaError{Version: version}
+	}
+	if version == 9 {
+		if err := normalizeSinglePromptDocument(data, &raw); err != nil {
+			return nil, err
+		}
 	}
 	if raw.UseCases == nil {
 		raw.UseCases = raw.Prompts
@@ -375,6 +390,65 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		}
 	}
 	return snap, nil
+}
+
+func normalizeSinglePromptDocument(data []byte, raw *rawUseCaseDocument) error {
+	if hasSchema9BulkCollection(data) {
+		return fmt.Errorf("prompton: schema9 single prompt document must not include bulk collections")
+	}
+	if raw.Prompt == nil || raw.Prompt.DocumentUseCase == nil {
+		return fmt.Errorf("prompton: schema9 prompt must be an object")
+	}
+	if raw.Deployment == nil {
+		return fmt.Errorf("prompton: schema9 deployment must be an object")
+	}
+	if raw.Model == nil {
+		return fmt.Errorf("prompton: schema9 model must be an object")
+	}
+	key := raw.Prompt.Key
+	if key == "" {
+		return fmt.Errorf("prompton: schema9 prompt.key is required")
+	}
+	if raw.Model.Provider == "" || raw.Model.Model == "" {
+		return fmt.Errorf("prompton: schema9 model provider and model are required")
+	}
+	if raw.Deployment.Provider != raw.Model.Provider || raw.Deployment.Model != raw.Model.Model {
+		return fmt.Errorf("prompton: schema9 deployment provider/model must match model")
+	}
+
+	if raw.PromptVersion == nil {
+		return fmt.Errorf("prompton: schema9 prompt_version must be an object")
+	}
+	if raw.PromptVersion.Prompt != key {
+		return fmt.Errorf("prompton: schema9 prompt_version.prompt must match prompt.key")
+	}
+	if raw.PromptVersion.Number <= 0 {
+		return fmt.Errorf("prompton: schema9 prompt_version.number must be a positive integer")
+	}
+	if raw.Deployment.PromptVersion == nil || *raw.Deployment.PromptVersion != raw.PromptVersion.Number {
+		return fmt.Errorf("prompton: schema9 deployment.prompt_version must match prompt_version.number")
+	}
+	raw.PromptVersions = map[string]*PromptVersion{
+		fmt.Sprintf("%s@%d", key, raw.PromptVersion.Number): raw.PromptVersion,
+	}
+
+	raw.Prompts = map[string]*DocumentUseCase{key: raw.Prompt.DocumentUseCase}
+	raw.Deployments = map[string]*Deployment{key: raw.Deployment}
+	raw.Models = map[string]*Model{raw.Model.Provider + ":" + raw.Model.Model: raw.Model}
+	return nil
+}
+
+func hasSchema9BulkCollection(data []byte) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return false
+	}
+	for _, key := range []string{"use_cases", "prompts", "deployments", "prompt_versions", "models"} {
+		if _, ok := fields[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func validateSchema8PromptVersionKey(key string, pv *PromptVersion) error {
