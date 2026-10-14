@@ -86,6 +86,83 @@ func TestLogFillsIDAndSDK(t *testing.T) {
 	}
 }
 
+func TestLogOmitsRetiredResourceReferences(t *testing.T) {
+	c := newTestClient(t, Config{Mode: ModeTest})
+	if err := c.Log(LogRecord{
+		UseCase:             "greeting",
+		Model:               "openai/gpt-4o-mini",
+		Status:              StatusOK,
+		StartedAt:           time.Now(),
+		DeploymentID:        "0198f2a1-0000-7000-8000-00000000d001",
+		DeploymentRevision:  "v2026.09.30-3",
+		PromptVersionID:     "0198f2a1-0000-7000-8000-00000000a001",
+		PromptVersionNumber: 2,
+		ModelID:             "0198f2a1-0000-7000-8000-00000000e001",
+	}); err != nil {
+		t.Fatalf("log: %v", err)
+	}
+	rec := c.Recorded()[0]
+	if _, ok := rec["deployment_id"]; ok {
+		t.Fatalf("deployment_id must not be sent in logs: %v", rec)
+	}
+	if _, ok := rec["prompt_version_id"]; ok {
+		t.Fatalf("prompt_version_id must not be sent in logs: %v", rec)
+	}
+	if _, ok := rec["model_id"]; ok {
+		t.Fatalf("model_id must not be sent in logs: %v", rec)
+	}
+	if rec["deployment_revision"] != "v2026.09.30-3" || rec["prompt_version_number"] != 2 {
+		t.Fatalf("readable evidence missing: %v", rec)
+	}
+}
+
+func TestLogFinalScrubRemovesRetiredRefsAddedByRedact(t *testing.T) {
+	addRetired := func(rec map[string]interface{}) map[string]interface{} {
+		rec["deployment_id"] = "0198f2a1-0000-7000-8000-00000000d001"
+		rec["prompt_version_id"] = "0198f2a1-0000-7000-8000-00000000a001"
+		rec["model_id"] = "0198f2a1-0000-7000-8000-00000000e001"
+		return rec
+	}
+	assertClean := func(t *testing.T, rec map[string]interface{}) {
+		t.Helper()
+		for _, key := range []string{"deployment_id", "prompt_version_id", "model_id"} {
+			if _, ok := rec[key]; ok {
+				t.Fatalf("%s must be scrubbed after redaction: %v", key, rec)
+			}
+		}
+	}
+
+	t.Run("capture", func(t *testing.T) {
+		c := newTestClient(t, Config{Mode: ModeTest, Redact: addRetired})
+		if err := c.Log(sampleRecord(1)); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		assertClean(t, c.Recorded()[0])
+	})
+
+	t.Run("send and retry", func(t *testing.T) {
+		server := newSnapshotServer(t, testSnapshotJSON)
+		server.scriptLogs("1", []int{429}, []string{""})
+		c, clock := newLoggingClient(t, server, func(cfg *Config) { cfg.Redact = addRetired })
+		if err := c.Log(sampleRecord(2)); err != nil {
+			t.Fatalf("log: %v", err)
+		}
+		if err := c.Flush(testContext(t)); err == nil {
+			t.Fatal("first flush should leave the scrubbed record queued after 429")
+		}
+		clock.Advance(2 * time.Second)
+		if err := c.Flush(testContext(t)); err != nil {
+			t.Fatalf("retry flush: %v", err)
+		}
+		batches := server.batches()
+		if len(batches) != 2 {
+			t.Fatalf("expected initial send and retry, got %d batches", len(batches))
+		}
+		assertClean(t, batches[0][0])
+		assertClean(t, batches[1][0])
+	})
+}
+
 func TestClosedTransportGenerationLogsAreSuppressedBeforeRedaction(t *testing.T) {
 	redacted := false
 	c := newTestClient(t, Config{
@@ -441,7 +518,17 @@ func TestTrackLogsASuccess(t *testing.T) {
 	if rec["status"] != "ok" || rec["stop_kind"] != "stop" || rec["prompt_key"] != "greeting" {
 		t.Fatalf("unexpected record: %v", rec)
 	}
-	if rec["deployment_id"] != res.DeploymentID || rec["template"] != "default" {
+	if _, ok := rec["deployment_id"]; ok {
+		t.Fatalf("deployment_id must not be sent in logs: %v", rec)
+	}
+	if _, ok := rec["model_id"]; ok {
+		t.Fatalf("model_id must not be sent in logs: %v", rec)
+	}
+	if _, ok := rec["prompt_version_id"]; ok {
+		t.Fatalf("prompt_version_id must not be sent in logs: %v", rec)
+	}
+	if rec["deployment_revision"] != res.DeploymentRevision || rec["template"] != "default" ||
+		rec["prompt_version_number"] != res.PromptVersionNumber {
 		t.Fatalf("the resolution evidence is missing: %v", rec)
 	}
 	if _, ok := rec["latency_ms"]; !ok {
@@ -504,8 +591,11 @@ func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 	if rec["template"] != "ko" {
 		t.Fatalf("prompt evidence = %v, want ko in %v", rec["template"], rec)
 	}
-	if rec["prompt_version_id"] != "0198f2a1-0000-7000-8000-00000000a002" {
-		t.Fatalf("prompt_version_id = %v, want ko prompt version", rec["prompt_version_id"])
+	if _, ok := rec["prompt_version_id"]; ok {
+		t.Fatalf("prompt_version_id must not be sent in logs: %v", rec)
+	}
+	if rec["prompt_version_number"] != 1 {
+		t.Fatalf("prompt_version_number = %v, want ko prompt version number", rec["prompt_version_number"])
 	}
 	loggedMessages := rec["input"].(map[string]interface{})["messages"].([]interface{})
 	if got := loggedMessages[1].(map[string]interface{})["content"]; got != "Ada님에게 인사해줘." {

@@ -155,12 +155,13 @@ type LogRecord struct {
 	// useCaseResolution is the internal evidence path used by Track.
 	useCaseResolution *useCaseResolution
 
-	DeploymentID       string
-	DeploymentRevision string
-	Prompt             string
-	PromptVersionID    string
-	ModelID            string
-	Source             Source
+	DeploymentID        string
+	DeploymentRevision  string
+	Prompt              string
+	PromptVersionID     string
+	PromptVersionNumber int
+	ModelID             string
+	Source              Source
 
 	Provider         string
 	ModelUsed        string
@@ -233,6 +234,9 @@ func (rec *LogRecord) applyResolution() {
 	if rec.PromptVersionID == "" {
 		rec.PromptVersionID = r.PromptVersionID
 	}
+	if rec.PromptVersionNumber == 0 {
+		rec.PromptVersionNumber = r.PromptVersionNumber
+	}
 	if rec.Source == "" {
 		rec.Source = r.Source
 	}
@@ -282,13 +286,13 @@ func (rec *LogRecord) toMap() map[string]interface{} {
 		"started_at": rec.StartedAt.UTC().Format("2006-01-02T15:04:05.000000Z"),
 	}
 	putString(out, "kind", string(rec.Kind))
-	putString(out, "deployment_id", rec.DeploymentID)
 	if rec.DeploymentRevision != "" {
 		out["deployment_revision"] = rec.DeploymentRevision
 	}
 	putString(out, "template", rec.Prompt)
-	putString(out, "prompt_version_id", rec.PromptVersionID)
-	putString(out, "model_id", rec.ModelID)
+	if rec.PromptVersionNumber > 0 {
+		out["prompt_version_number"] = rec.PromptVersionNumber
+	}
 	putString(out, "source", string(rec.Source))
 	putString(out, "provider", rec.Provider)
 	putString(out, "model_used", rec.ModelUsed)

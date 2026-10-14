@@ -226,7 +226,8 @@ counted.
 | `StartedAt` | time.Time | Required. Defaults to now; rejected if more than 5 minutes ahead or 7 days behind |
 | `Kind` | Kind | `chat` (default), `text`, `embedding` |
 | `UseCaseEvidence` | *UseCase | Fills every use-case evidence field below that you left empty |
-| `DeploymentID`, `DeploymentRevision`, `Prompt`, `PromptVersionID`, `ModelID` | | Which pin produced the call |
+	| `DeploymentRevision`, `Prompt`, `PromptVersionNumber` | | Readable evidence for the pin that produced the call |
+	| `DeploymentID`, `PromptVersionID`, `ModelID` | | Local response/cache evidence; not emitted in monitoring log requests |
 | `Source` | Source | `remote`, `disk`, `bundle`, `manual` |
 | `Provider`, `ModelUsed`, `UpstreamProvider` | string | Who actually served it |
 | `Params` | map | The parameters sent |

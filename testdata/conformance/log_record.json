@@ -8,7 +8,6 @@
             "language": "en",
             "plan": "pro"
           },
-          "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
           "deployment_revision": "v2026.09.30-3",
           "end_user_ref": "user-42",
           "finish_reason": "stop",
@@ -45,11 +44,11 @@
             "temperature": 0.2
           },
           "prompt_key": "greeting",
-          "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a001",
+          "prompt_version_number": 2,
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.5.1"
+            "version": "0.5.0"
           },
           "sequence": 1,
           "source": "remote",
@@ -73,7 +72,6 @@
         },
         {
           "context": {},
-          "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
           "deployment_revision": "v2026.09.30-3",
           "error": {
             "kind": "rate_limited",
@@ -105,11 +103,11 @@
             "temperature": 0.2
           },
           "prompt_key": "greeting",
-          "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a001",
+          "prompt_version_number": 2,
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.5.1"
+            "version": "0.5.0"
           },
           "sequence": 2,
           "source": "remote",
@@ -127,7 +125,6 @@
         },
         {
           "context": {},
-          "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
           "deployment_revision": "v2026.09.30-3",
           "error": {
             "kind": "parse",
@@ -162,11 +159,11 @@
             "temperature": 0.2
           },
           "prompt_key": "greeting",
-          "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a001",
+          "prompt_version_number": 2,
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.5.1"
+            "version": "0.5.0"
           },
           "source": "remote",
           "started_at": "2026-09-04T09:00:00.000000Z",
@@ -184,7 +181,6 @@
         },
         {
           "context": {},
-          "deployment_id": "0198f2a1-0000-7000-8000-00000000d003",
           "deployment_revision": "v2026.09.30-2",
           "id": "0198f2a1-1111-7000-8000-000000000004",
           "input": {
@@ -205,7 +201,7 @@
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.5.1"
+            "version": "0.5.0"
           },
           "source": "disk",
           "started_at": "2026-09-04T09:00:00.000000Z",
@@ -220,7 +216,6 @@
           }
         },
         {
-          "deployment_id": "0198f2a1-0000-7000-8000-00000000d002",
           "deployment_revision": "v2026.09.30-1",
           "finish_reason": "stop",
           "id": "0198f2a1-1111-7000-8000-000000000005",
@@ -230,16 +225,15 @@
           "kind": "text",
           "latency_ms": 1180,
           "model": "openai/gpt-4o-mini",
-          "model_id": "0198f2a1-0000-7000-8000-00000000e001",
           "output": {
             "content": "Alpha and beta, summarised."
           },
           "prompt_key": "summarize",
-          "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a003",
+          "prompt_version_number": 4,
           "provider": "openrouter",
           "sdk": {
             "name": "prompton_sdk",
-            "version": "0.5.1"
+            "version": "0.5.0"
           },
           "source": "bundle",
           "started_at": "2026-09-04T09:00:00.000000Z",
@@ -302,7 +296,7 @@
       "status",
       "started_at"
     ],
-    "soft_references": "deployment_id, prompt_version_id and model_id must be a UUID or absent; they are not foreign keys, so a record survives the deletion of what it points at",
+    "resource_references": "logs identify prompt evidence with prompt_key, deployment_revision, provider, model and optional prompt_version_number. deployment_id, prompt_version_id and model_id are retired request fields and must be absent.",
     "source": "remote | disk | bundle | manual",
     "started_at": "ISO8601 with an offset. Rejected when more than 5 minutes in the future or more than 7 days in the past - regenerate this field before replaying these fixtures against a live server",
     "status": "ok | error",
@@ -311,11 +305,11 @@
   },
   "format_version": 1,
   "generated_from": {
-    "commit": "b8abd0194cb5fadef445ca6fbc1fba72a819b83f",
+    "commit": "61205451b1b14e9a09cdadfcf8e79622ab0700db",
     "language": "elixir",
     "repo": "https://github.com/polimo-dev/prompton-elixir",
     "sdk": "prompton_sdk",
-    "sdk_version": "0.5.1"
+    "sdk_version": "0.5.0"
   },
   "records": [
     {
@@ -327,7 +321,6 @@
           "language": "en",
           "plan": "pro"
         },
-        "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
         "deployment_revision": "v2026.09.30-3",
         "end_user_ref": "user-42",
         "finish_reason": "stop",
@@ -364,11 +357,11 @@
           "temperature": 0.2
         },
         "prompt_key": "greeting",
-        "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a001",
+        "prompt_version_number": 2,
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.5.1"
+          "version": "0.5.0"
         },
         "sequence": 1,
         "source": "remote",
@@ -397,7 +390,6 @@
       "name": "chat/error_without_output",
       "record": {
         "context": {},
-        "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
         "deployment_revision": "v2026.09.30-3",
         "error": {
           "kind": "rate_limited",
@@ -429,11 +421,11 @@
           "temperature": 0.2
         },
         "prompt_key": "greeting",
-        "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a001",
+        "prompt_version_number": 2,
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.5.1"
+          "version": "0.5.0"
         },
         "sequence": 2,
         "source": "remote",
@@ -456,7 +448,6 @@
       "name": "chat/error_with_usage_preserved",
       "record": {
         "context": {},
-        "deployment_id": "0198f2a1-0000-7000-8000-00000000d001",
         "deployment_revision": "v2026.09.30-3",
         "error": {
           "kind": "parse",
@@ -491,11 +482,11 @@
           "temperature": 0.2
         },
         "prompt_key": "greeting",
-        "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a001",
+        "prompt_version_number": 2,
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.5.1"
+          "version": "0.5.0"
         },
         "source": "remote",
         "started_at": "2026-09-04T09:00:00.000000Z",
@@ -514,11 +505,10 @@
     },
     {
       "built_by": "PromptOnSDK.track/3",
-      "description": "An embedding log: kind is embedding, there is no template or prompt_version_id, the input is text and only input_tokens are reported. source records that the prompt document came from the disk cache.",
+      "description": "An embedding log: kind is embedding, there is no template or prompt_version_number, the input is text and only input_tokens are reported. source records that the prompt document came from the disk cache.",
       "name": "embedding/success",
       "record": {
         "context": {},
-        "deployment_id": "0198f2a1-0000-7000-8000-00000000d003",
         "deployment_revision": "v2026.09.30-2",
         "id": "0198f2a1-1111-7000-8000-000000000004",
         "input": {
@@ -539,7 +529,7 @@
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.5.1"
+          "version": "0.5.0"
         },
         "source": "disk",
         "started_at": "2026-09-04T09:00:00.000000Z",
@@ -559,7 +549,6 @@
       "description": "A record an app assembles itself, for a streaming call or a background job that does not wrap the provider call. input.text carries a single template string instead of a message list, and the record is minimal: only the five required fields plus what the app knows.",
       "name": "text/manual_log_with_input_text",
       "record": {
-        "deployment_id": "0198f2a1-0000-7000-8000-00000000d002",
         "deployment_revision": "v2026.09.30-1",
         "finish_reason": "stop",
         "id": "0198f2a1-1111-7000-8000-000000000005",
@@ -569,16 +558,15 @@
         "kind": "text",
         "latency_ms": 1180,
         "model": "openai/gpt-4o-mini",
-        "model_id": "0198f2a1-0000-7000-8000-00000000e001",
         "output": {
           "content": "Alpha and beta, summarised."
         },
         "prompt_key": "summarize",
-        "prompt_version_id": "0198f2a1-0000-7000-8000-00000000a003",
+        "prompt_version_number": 4,
         "provider": "openrouter",
         "sdk": {
           "name": "prompton_sdk",
-          "version": "0.5.1"
+          "version": "0.5.0"
         },
         "source": "bundle",
         "started_at": "2026-09-04T09:00:00.000000Z",

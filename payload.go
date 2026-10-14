@@ -95,7 +95,14 @@ func applyPayloadPolicy(gen map[string]interface{}, policy *PayloadPolicy, cfg p
 	if cfg.Redact != nil {
 		out = runRedact(out, cfg)
 	}
-	return out
+	return stripRetiredLogRefs(out)
+}
+
+func stripRetiredLogRefs(record map[string]interface{}) map[string]interface{} {
+	delete(record, "deployment_id")
+	delete(record, "prompt_version_id")
+	delete(record, "model_id")
+	return record
 }
 
 func runRedact(gen map[string]interface{}, cfg payloadSettings) (result map[string]interface{}) {
