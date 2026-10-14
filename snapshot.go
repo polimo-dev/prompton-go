@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 )
 
@@ -293,6 +292,9 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 	}
 	for key, dep := range raw.Deployments {
 		if dep == nil {
+			if version >= 8 {
+				return nil, fmt.Errorf("prompton: schema8 deployment %s must be an object", key)
+			}
 			continue
 		}
 		if version >= 8 {
@@ -376,15 +378,11 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 }
 
 func validateSchema8PromptVersionKey(key string, pv *PromptVersion) error {
-	prompt, rawNumber, ok := strings.Cut(key, "@")
-	if !ok || prompt == "" || rawNumber == "" {
-		return fmt.Errorf("prompton: schema8 prompt_versions key %q must look like prompt@number", key)
+	if pv.Prompt == "" || pv.Number <= 0 {
+		return fmt.Errorf("prompton: schema8 prompt_version %q needs prompt and positive number fields", key)
 	}
-	number, err := strconv.Atoi(rawNumber)
-	if err != nil || number <= 0 {
-		return fmt.Errorf("prompton: schema8 prompt_versions key %q must use a positive number", key)
-	}
-	if pv.Prompt != prompt || pv.Number != number {
+	expected := fmt.Sprintf("%s@%d", pv.Prompt, pv.Number)
+	if key != expected {
 		return fmt.Errorf("prompton: schema8 prompt_versions key %q must match prompt and number fields", key)
 	}
 	return nil
@@ -400,11 +398,17 @@ func validateSchema8ModelKey(key string, m *Model) error {
 
 func validateSchema8References(snap *UseCaseDocument) error {
 	for key, dep := range snap.Deployments {
+		if dep == nil {
+			return fmt.Errorf("prompton: schema8 deployment %s must be an object", key)
+		}
+		uc := snap.UseCases[key]
+		if uc == nil {
+			return fmt.Errorf("prompton: schema8 deployment %s references unknown prompt", key)
+		}
 		if snap.Models[dep.ModelID] == nil {
 			return fmt.Errorf("prompton: schema8 deployment %s references unknown model %s", key, dep.ModelID)
 		}
-		uc := snap.UseCases[key]
-		if uc != nil && uc.Kind == KindEmbedding {
+		if uc.Kind == KindEmbedding {
 			continue
 		}
 		if dep.PromptVersion == nil || *dep.PromptVersion <= 0 {

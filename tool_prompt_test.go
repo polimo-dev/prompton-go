@@ -182,12 +182,16 @@ func TestSchemaEightCompositeKeysMustMatchEmbeddedFields(t *testing.T) {
 	}
 
 	cases := map[string]string{
-		"prompt mismatch":   strings.Replace(valid, `"prompt":"chat"`, `"prompt":"other"`, 1),
-		"number mismatch":   strings.Replace(valid, `"number":2`, `"number":99`, 1),
-		"provider mismatch": strings.Replace(valid, `"provider":"openrouter","model":"openai/gpt-4o-mini"}`, `"provider":"other","model":"openai/gpt-4o-mini"}`, 1),
-		"model mismatch":    strings.Replace(valid, `"model":"openai/gpt-4o-mini"}`, `"model":"openai/other"}`, 1),
-		"missing version":   strings.Replace(valid, `"chat@2"`, `"chat@3"`, 1),
-		"missing model":     strings.Replace(valid, `"openrouter:openai/gpt-4o-mini"`, `"openrouter:openai/other"`, 1),
+		"prompt mismatch":       strings.Replace(valid, `"prompt":"chat"`, `"prompt":"other"`, 1),
+		"number mismatch":       strings.Replace(valid, `"number":2`, `"number":99`, 1),
+		"plus number alias":     strings.Replace(valid, `"chat@2"`, `"chat@+2"`, 1),
+		"leading zero alias":    strings.Replace(valid, `"chat@2"`, `"chat@02"`, 1),
+		"provider mismatch":     strings.Replace(valid, `"provider":"openrouter","model":"openai/gpt-4o-mini"}`, `"provider":"other","model":"openai/gpt-4o-mini"}`, 1),
+		"model mismatch":        strings.Replace(valid, `"model":"openai/gpt-4o-mini"}`, `"model":"openai/other"}`, 1),
+		"missing version":       strings.Replace(valid, `"chat@2"`, `"chat@3"`, 1),
+		"missing model":         strings.Replace(valid, `"openrouter:openai/gpt-4o-mini"`, `"openrouter:openai/other"`, 1),
+		"null deployment":       strings.Replace(valid, `"chat":{"revision":"v2026.10.14-1","provider":"openrouter","model":"openai/gpt-4o-mini","prompt_version":2}`, `"chat":null`, 1),
+		"missing owning prompt": strings.Replace(valid, `"prompts":{"chat":{"kind":"chat"}}`, `"prompts":{}`, 1),
 	}
 	for name, body := range cases {
 		if _, err := ParseUseCaseDocument([]byte(body)); err == nil {
