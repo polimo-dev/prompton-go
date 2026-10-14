@@ -21,10 +21,10 @@ UseCase ──▶ {Model, Params, ProviderOptions, DeploymentRevision, Prompt, �
 
 ## Install
 
-Install the v0.7.1 GitHub source release:
+Install the v0.8.0 GitHub source release:
 
 ```sh
-go get github.com/polimo-dev/prompton-go@v0.7.1
+go get github.com/polimo-dev/prompton-go@v0.8.0
 ```
 
 ```go
@@ -175,7 +175,7 @@ environment, and load the one matching the process. `client.Refresh(ctx)` is the
 | …and nothing anywhere | Use case selection fails | `ErrNotReady`: "PromptOn is unreachable and nothing is cached" |
 | Use-case document for the wrong environment or project, or naming neither | Refuses it and keeps the previous document | The previous document, or `ErrNotReady` |
 | `UseCase` asked for another environment | Refuses rather than answering from the wrong pin | `ErrEnvironmentMismatch`, naming both |
-| Any prompt document outside supported integer `schema_version` 4 through 9 | Refuses it and keeps the previous document | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
+| Any prompt document outside exact integer `schema_version: 1` | Refuses it and keeps the previous document | `*UnsupportedSchemaError`, or a parse error for a missing/non-integer field |
 | Use case not in the document | — | `ErrUnknownUseCase` |
 | Use case with no live deployment | — | `ErrUnresolved` |
 | Prompt name the revision does not pin | Never falls back to `default` | `ErrUnknownPrompt`, with `PromptNames` |
@@ -227,7 +227,7 @@ counted.
 | `Kind` | Kind | `chat` (default), `decision`, `text`, `embedding` |
 | `UseCaseEvidence` | *UseCase | Fills every use-case evidence field below that you left empty |
 	| `DeploymentRevision`, `Prompt`, `PromptVersionNumber` | | Readable evidence for the pin that produced the call |
-	| `DeploymentID`, `PromptVersionID`, `ModelID` | | Deprecated local response/cache evidence; nil/empty for schema8 readable configs and not emitted in monitoring log requests |
+	| `DeploymentID`, `PromptVersionID`, `ModelID` | | Deprecated local response/cache evidence; nil/empty for schema1 readable configs and not emitted in monitoring log requests |
 | `Source` | Source | `remote`, `disk`, `bundle`, `manual` |
 | `Provider`, `ModelUsed`, `UpstreamProvider` | string | Who actually served it |
 | `Params` | map | The parameters sent |

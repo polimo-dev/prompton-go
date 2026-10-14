@@ -186,7 +186,7 @@ func assertUseCaseError(t *testing.T, err error, want string, expect map[string]
 // which is also the shape prompt endpoint answers with.
 func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 	out := map[string]interface{}{
-		"deployment_id":    r.DeploymentID,
+		"deployment_id":    nil,
 		"key":              r.UseCase,
 		"revision":         r.DeploymentRevision,
 		"kind":             string(r.Kind),
@@ -219,8 +219,10 @@ func useCaseSelectionToMap(r *useCaseResolution) map[string]interface{} {
 	} else {
 		out["provider"] = r.Provider
 	}
-	if r.PromptVersionID == "" {
+	if r.PromptVersionNumber == 0 {
 		out["prompt_version"] = nil
+	} else if r.PromptVersionID == "" {
+		out["prompt_version"] = map[string]interface{}{"id": nil, "number": r.PromptVersionNumber}
 	} else {
 		out["prompt_version"] = map[string]interface{}{"id": r.PromptVersionID, "number": r.PromptVersionNumber}
 	}

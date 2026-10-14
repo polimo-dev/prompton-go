@@ -4,6 +4,17 @@ All notable changes to this SDK are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.8.0
+
+- Breaking config contract: the SDK now accepts only exact integer `schema_version: 1`.
+  Older schema versions are rejected instead of decoded through compatibility branches.
+- Prompt metadata now uses `variables`; `input_schema` is rejected at the prompt metadata boundary,
+  while provider-native tool schemas remain opaque and preserved.
+- `GET /api/v1/prompts/{key}` single-prompt responses and offline aggregate bundles both use
+  schema1 readable references (`prompt@version` and `provider:model`). Prompt index responses are
+  discovery-only and are rejected as loadable config.
+- Per-key raw response bytes, ETags, disk cache and single-response export behavior are preserved.
+
 ## 0.7.1
 
 - Added support for schema9 flat single-prompt responses from `GET /api/v1/prompts/{key}`.

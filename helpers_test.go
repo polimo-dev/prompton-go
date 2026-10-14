@@ -39,65 +39,45 @@ func quietLogger(t *testing.T) func(string, ...interface{}) {
 }
 
 const testSnapshotJSON = `{
-  "schema_version": 4,
+  "schema_version": 1,
   "project": "sdkfixture",
   "environment": "production",
-  "use_cases": {
-    "greeting": {
-      "id": "0198f2a1-0000-7000-8000-00000000c001",
-      "kind": "chat",
-      "input_schema": [{"name": "name", "type": "string", "required": true}],
-      "default_params": {"max_tokens": 512, "temperature": 0.7},
-      "payload_policy": {"mode": "full", "sample_rate": 1.0, "max_bytes": 262144, "retention_days": 30, "encrypt": false}
-    }
+  "prompt": {
+    "key": "greeting",
+    "kind": "chat",
+    "variables": [{"name": "name", "type": "string", "required": true}],
+    "default_params": {"max_tokens": 512, "temperature": 0.7},
+    "payload_policy": {"mode": "full", "sample_rate": 1.0, "max_bytes": 262144, "retention_days": 30, "encrypt": false}
   },
-  "deployments": {
-    "greeting": {
-      "id": "0198f2a1-0000-7000-8000-00000000d001",
-      "revision": "v2026.09.30-3",
-      "model_id": "0198f2a1-0000-7000-8000-00000000e001",
-      "params": {"temperature": 0.2},
-      "provider_options": {},
-      "prompt_pins": {
-        "default": "0198f2a1-0000-7000-8000-00000000a001",
-        "ko": "0198f2a1-0000-7000-8000-00000000a002"
-      }
-    }
+  "deployment": {
+    "revision": "v2026.09.30-3",
+    "provider": "openrouter",
+    "model": "openai/gpt-4o-mini",
+    "prompt_version": 2,
+    "params": {"temperature": 0.2},
+    "provider_options": {}
   },
-  "prompt_versions": {
-    "0198f2a1-0000-7000-8000-00000000a001": {
-      "id": "0198f2a1-0000-7000-8000-00000000a001",
-      "prompt_id": "0198f2a1-0000-7000-8000-00000000b001",
-      "number": 2,
-      "engine": "liquid",
-      "messages": [{"role": "system", "content": "You greet people."}, {"role": "user", "content": "Say hello to {{ name }}."}],
-      "text_template": null
-    },
-    "0198f2a1-0000-7000-8000-00000000a002": {
-      "id": "0198f2a1-0000-7000-8000-00000000a002",
-      "prompt_id": "0198f2a1-0000-7000-8000-00000000b002",
-      "number": 1,
-      "engine": "liquid",
-      "messages": [{"role": "system", "content": "너는 친절한 인사 도우미다."}, {"role": "user", "content": "{{ name }}님에게 인사해줘."}],
-      "text_template": null
-    }
+  "prompt_version": {
+    "prompt": "greeting",
+    "number": 2,
+    "kind": "chat",
+    "engine": "liquid",
+    "messages": [{"role": "system", "content": "You greet people."}, {"role": "user", "content": "Say hello to {{ name }}."}],
+    "text_template": null
   },
-  "models": {
-    "0198f2a1-0000-7000-8000-00000000e001": {
-      "id": "0198f2a1-0000-7000-8000-00000000e001",
-      "provider": "openrouter",
-      "model_id": "openai/gpt-4o-mini",
-      "display_name": "GPT-4o mini",
-      "metadata": {},
-      "provider_options": {"only": ["OpenAI"]},
-      "capabilities": ["tools"],
-      "status": "active"
-    }
+  "model": {
+    "provider": "openrouter",
+    "model": "openai/gpt-4o-mini",
+    "display_name": "GPT-4o mini",
+    "metadata": {},
+    "provider_options": {"only": ["OpenAI"]},
+    "capabilities": ["tools"],
+    "status": "active"
   }
 }`
 
 func stagingSnapshotJSON() string {
-	return `{"schema_version":4,"project":"sdkfixture","environment":"staging","use_cases":{},"deployments":{},"prompt_versions":{},"models":{}}`
+	return `{"schema_version":1,"project":"sdkfixture","environment":"staging","prompts":{},"deployments":{},"prompt_versions":{},"models":{}}`
 }
 
 // unlabelledSnapshotJSON is a valid v3 document that names neither environment

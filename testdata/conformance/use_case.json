@@ -514,7 +514,7 @@
             "temperature": 0.4
           },
           "id": "0198f2a1-0000-7000-8000-00000000c001",
-          "input_schema": [],
+          "variables": [],
           "kind": "chat",
           "payload_policy": {
             "encrypt": false,
@@ -646,7 +646,7 @@
         "draft": {
           "default_params": {},
           "id": "0198f2a1-0000-7000-8000-00000000c004",
-          "input_schema": [],
+          "variables": [],
           "kind": "chat",
           "payload_policy": {
             "encrypt": false,
@@ -659,7 +659,7 @@
         "embed": {
           "default_params": {},
           "id": "0198f2a1-0000-7000-8000-00000000c003",
-          "input_schema": [
+          "variables": [
             {
               "name": "text",
               "required": true,
@@ -681,7 +681,7 @@
             "temperature": 0.7
           },
           "id": "0198f2a1-0000-7000-8000-00000000c001",
-          "input_schema": [
+          "variables": [
             {
               "name": "name",
               "required": true,
@@ -702,7 +702,7 @@
             "temperature": 0.0
           },
           "id": "0198f2a1-0000-7000-8000-00000000c002",
-          "input_schema": [
+          "variables": [
             {
               "name": "items",
               "required": true,
@@ -785,7 +785,7 @@
             "temperature": 0.7
           },
           "id": "0198f2a1-0000-7000-8000-00000000c001",
-          "input_schema": [
+          "variables": [
             {
               "name": "name",
               "required": true,

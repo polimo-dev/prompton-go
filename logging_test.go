@@ -576,7 +576,7 @@ func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 		t.Fatalf("SetUseCaseDocument: %v", err)
 	}
 	useCase := mustUseCase(t, c, "greeting")
-	messages, err := useCase.Messages(testContext(t), map[string]interface{}{"name": "Ada"}, WithPrompt("ko"))
+	messages, err := useCase.Messages(testContext(t), map[string]interface{}{"name": "Ada"})
 	if err != nil {
 		t.Fatalf("Messages: %v", err)
 	}
@@ -588,17 +588,17 @@ func TestMessagesPromptSelectionCarriesIntoTrackEvidence(t *testing.T) {
 		t.Fatalf("Track: %v", err)
 	}
 	rec := c.Recorded()[0]
-	if rec["template"] != "ko" {
-		t.Fatalf("prompt evidence = %v, want ko in %v", rec["template"], rec)
+	if rec["template"] != "default" {
+		t.Fatalf("prompt evidence = %v, want default in %v", rec["template"], rec)
 	}
 	if _, ok := rec["prompt_version_id"]; ok {
 		t.Fatalf("prompt_version_id must not be sent in logs: %v", rec)
 	}
-	if rec["prompt_version_number"] != 1 {
-		t.Fatalf("prompt_version_number = %v, want ko prompt version number", rec["prompt_version_number"])
+	if rec["prompt_version_number"] != 2 {
+		t.Fatalf("prompt_version_number = %v, want default prompt version number", rec["prompt_version_number"])
 	}
 	loggedMessages := rec["input"].(map[string]interface{})["messages"].([]interface{})
-	if got := loggedMessages[1].(map[string]interface{})["content"]; got != "Ada님에게 인사해줘." {
+	if got := loggedMessages[1].(map[string]interface{})["content"]; got != "Say hello to Ada." {
 		t.Fatalf("logged rendered message = %v", got)
 	}
 }

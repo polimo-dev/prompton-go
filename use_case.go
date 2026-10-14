@@ -14,8 +14,10 @@ type UseCase struct {
 	Provider          string
 	Params            map[string]interface{}
 	Tools             map[string]interface{}
+	Decision          map[string]interface{}
 
 	ProviderOptions     map[string]interface{}
+	Variables           []Variable
 	DeploymentID        string
 	DeploymentRevision  string
 	Prompt              string
@@ -68,6 +70,16 @@ func (u *UseCase) Text(ctx context.Context, vars map[string]interface{}, opts ..
 	return res.RenderText(vars)
 }
 
+// Decision renders this decision use case and returns the native decision payload.
+func (u *UseCase) DecisionPayload(ctx context.Context, vars map[string]interface{}, opts ...UseCaseOption) (map[string]interface{}, error) {
+	res, err := u.selectResolution(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	u.replaceResolution(res)
+	return res.RenderDecision(vars)
+}
+
 func (u *UseCase) replaceResolution(res *useCaseResolution) {
 	u.useCaseResolution = res
 	u.Key = res.UseCase
@@ -77,7 +89,9 @@ func (u *UseCase) replaceResolution(res *useCaseResolution) {
 	u.Provider = res.Provider
 	u.Params = res.Params
 	u.Tools = res.Tools
+	u.Decision = res.Decision
 	u.ProviderOptions = res.ProviderOptions
+	u.Variables = res.Variables
 	u.DeploymentID = res.DeploymentID
 	u.DeploymentRevision = res.DeploymentRevision
 	u.Prompt = res.Prompt

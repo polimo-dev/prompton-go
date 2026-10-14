@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -752,8 +751,8 @@ func TestExportUseCaseDocumentWritesSnapshotAtomically(t *testing.T) {
 	}
 }
 
-func TestSchema9SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T) {
-	body := schema9PromptJSON("greeting")
+func TestSchema1SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T) {
+	body := schema1PromptJSON("greeting")
 	server := newSnapshotServer(t, body)
 	dir := t.TempDir()
 	diskPath := filepath.Join(dir, "snapshot.json")
@@ -768,14 +767,14 @@ func TestSchema9SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T)
 	})
 	res := mustUseCase(t, c, "greeting", WithVariables(map[string]interface{}{"name": "Ada"}))
 	if res.Model != "openai/gpt-4o-mini" || res.useCaseResolution.Messages[0].Content != "Say hello to Ada." {
-		t.Fatalf("schema9 prompt did not resolve/render: %+v", res)
+		t.Fatalf("schema1 prompt did not resolve/render: %+v", res)
 	}
 	cached, err := os.ReadFile(keySnapshotPath(diskPath, "greeting"))
 	if err != nil {
 		t.Fatalf("read per-key cache: %v", err)
 	}
 	if string(cached) != body {
-		t.Fatal("per-key cache must preserve the schema9 response bytes unchanged")
+		t.Fatal("per-key cache must preserve the schema1 response bytes unchanged")
 	}
 	out := filepath.Join(dir, "bundle.json")
 	if err := c.ExportUseCaseDocument(out); err != nil {
@@ -786,7 +785,7 @@ func TestSchema9SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T)
 		t.Fatalf("read export: %v", err)
 	}
 	if string(exported) != body {
-		t.Fatal("export must preserve the schema9 response bytes unchanged")
+		t.Fatal("export must preserve the schema1 response bytes unchanged")
 	}
 	restarted := newTestClient(t, Config{
 		Host:             "http://127.0.0.1:1",
@@ -798,7 +797,7 @@ func TestSchema9SinglePromptFetchPreservesRawCacheAndExportReloads(t *testing.T)
 		Timeout:          20 * time.Millisecond,
 	})
 	if got := mustUseCase(t, restarted, "greeting", WithVariables(map[string]interface{}{"name": "Ada"})).useCaseResolution.Messages[0].Content; got != "Say hello to Ada." {
-		t.Fatalf("reloaded schema9 bundle rendered %q", got)
+		t.Fatalf("reloaded schema1 bundle rendered %q", got)
 	}
 }
 
@@ -923,7 +922,7 @@ func TestExportUseCaseDocumentProducesALoadableBundle(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionReadsFiveThroughNine(t *testing.T) {
+func TestSchemaVersionReadsOnlyOne(t *testing.T) {
 	cases := []struct {
 		name    string
 		body    string
@@ -942,18 +941,13 @@ func TestSchemaVersionReadsFiveThroughNine(t *testing.T) {
 		}
 	}
 
-	if _, err := ParseUseCaseDocument([]byte(`{"schema_version":4,"use_cases":{}}`)); err != nil {
-		t.Fatalf("schema_version 4 should be accepted: %v", err)
-	}
-	for _, version := range []int{5, 6, 7, 8} {
-		if _, err := ParseUseCaseDocument([]byte(fmt.Sprintf(`{"schema_version":%d,"use_cases":{}}`, version))); err != nil {
-			t.Fatalf("schema_version %d should be accepted: %v", version, err)
-		}
+	if _, err := ParseUseCaseDocument([]byte(`{"schema_version":1,"prompts":{},"deployments":{},"prompt_versions":{},"models":{}}`)); err != nil {
+		t.Fatalf("schema_version 1 should be accepted: %v", err)
 	}
 }
 
-func TestSchema9SinglePromptResponseNormalizesToReadableDocument(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(schema9PromptJSON("support_reply")))
+func TestSchema1SinglePromptResponseNormalizesToReadableDocument(t *testing.T) {
+	snap, err := ParseUseCaseDocument([]byte(schema1PromptJSON("support_reply")))
 	if err != nil {
 		t.Fatalf("ParseUseCaseDocument: %v", err)
 	}
@@ -961,19 +955,22 @@ func TestSchema9SinglePromptResponseNormalizesToReadableDocument(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveSnapshot: %v", err)
 	}
-	if snap.SchemaVersion != 9 {
-		t.Fatalf("schema9 parsed view should keep response schema version, got %d", snap.SchemaVersion)
+	if snap.SchemaVersion != 1 {
+		t.Fatalf("schema1 parsed view should keep response schema version, got %d", snap.SchemaVersion)
 	}
 	if res.Model != "openai/gpt-4o-mini" || res.Provider != "openrouter" || res.PromptVersionNumber != 1 {
-		t.Fatalf("unexpected schema9 resolution: %+v", res)
+		t.Fatalf("unexpected schema1 resolution: %+v", res)
+	}
+	if len(res.Variables) != 1 || res.Variables[0].Description != "Name to greet" || res.Variables[0].Example != "Ada" {
+		t.Fatalf("variable metadata was not preserved: %#v", res.Variables)
 	}
 	if got := res.Messages[0].Content; got != "Say hello to Ada." {
 		t.Fatalf("rendered content %q", got)
 	}
 }
 
-func TestSchema9DecisionResponsePreservesNativeDecisionPayload(t *testing.T) {
-	snap, err := ParseUseCaseDocument([]byte(schema9DecisionJSON()))
+func TestSchema1DecisionResponsePreservesNativeDecisionPayload(t *testing.T) {
+	snap, err := ParseUseCaseDocument([]byte(schema1DecisionJSON()))
 	if err != nil {
 		t.Fatalf("ParseUseCaseDocument: %v", err)
 	}
@@ -985,27 +982,35 @@ func TestSchema9DecisionResponsePreservesNativeDecisionPayload(t *testing.T) {
 	if questions["eligible"] == nil {
 		t.Fatalf("decision payload was not preserved: %#v", version.Decision)
 	}
+	res, err := resolveSnapshot(snap, "decision_triage", WithVariables(map[string]interface{}{"name": "Ada"}))
+	if err != nil {
+		t.Fatalf("resolve decision: %v", err)
+	}
+	eligible := res.Decision["questions"].(map[string]interface{})["eligible"].(map[string]interface{})
+	if got := eligible["instructions"]; got != "Decide for Ada" {
+		t.Fatalf("decision instructions = %v", got)
+	}
 }
 
-func TestSchema9RejectsMixedOrInconsistentSinglePromptShapes(t *testing.T) {
+func TestSchema1RejectsMixedOrInconsistentSinglePromptShapes(t *testing.T) {
 	cases := map[string]string{
-		"mixed collections": mutateSchema9Prompt("chat", func(doc map[string]interface{}) {
+		"mixed collections": mutateSchema1Prompt("chat", func(doc map[string]interface{}) {
 			doc["prompts"] = map[string]interface{}{}
 		}),
-		"null mixed collection": mutateSchema9Prompt("chat", func(doc map[string]interface{}) {
+		"null mixed collection": mutateSchema1Prompt("chat", func(doc map[string]interface{}) {
 			doc["prompts"] = nil
 		}),
-		"prompt mismatch": mutateSchema9Prompt("chat", func(doc map[string]interface{}) {
+		"prompt mismatch": mutateSchema1Prompt("chat", func(doc map[string]interface{}) {
 			doc["prompt_version"].(map[string]interface{})["prompt"] = "other"
 		}),
-		"model mismatch": mutateSchema9Prompt("chat", func(doc map[string]interface{}) {
+		"model mismatch": mutateSchema1Prompt("chat", func(doc map[string]interface{}) {
 			doc["deployment"].(map[string]interface{})["model"] = "other"
 		}),
-		"missing version": mutateSchema9Prompt("chat", func(doc map[string]interface{}) {
+		"missing version": mutateSchema1Prompt("chat", func(doc map[string]interface{}) {
 			doc["prompt_version"] = nil
 		}),
-		"float schema": strings.Replace(schema9PromptJSON("chat"), `"schema_version":9`, `"schema_version":9.0`, 1),
-		"missing prompt": mutateSchema9Prompt("chat", func(doc map[string]interface{}) {
+		"float schema": strings.Replace(schema1PromptJSON("chat"), `"schema_version":1`, `"schema_version":1.0`, 1),
+		"missing prompt": mutateSchema1Prompt("chat", func(doc map[string]interface{}) {
 			doc["prompt"] = nil
 		}),
 	}
@@ -1016,21 +1021,23 @@ func TestSchema9RejectsMixedOrInconsistentSinglePromptShapes(t *testing.T) {
 	}
 }
 
-func mutateSchema9Prompt(key string, mutate func(map[string]interface{})) string {
+func mutateSchema1Prompt(key string, mutate func(map[string]interface{})) string {
 	var doc map[string]interface{}
-	_ = json.Unmarshal([]byte(schema9PromptJSON(key)), &doc)
+	_ = json.Unmarshal([]byte(schema1PromptJSON(key)), &doc)
 	mutate(doc)
 	return string(canonicalJSON(doc))
 }
 
-func schema9PromptJSON(key string) string {
+func schema1PromptJSON(key string) string {
 	version := 1
 	body := map[string]interface{}{
-		"schema_version": 9,
+		"schema_version": 1,
 		"project":        "sdkfixture",
 		"environment":    "production",
 		"prompt": map[string]interface{}{
-			"key": key, "kind": "chat", "input_schema": []interface{}{}, "default_params": map[string]interface{}{},
+			"key": key, "kind": "chat", "variables": []interface{}{
+				map[string]interface{}{"name": "name", "type": "string", "required": true, "description": "Name to greet", "example": "Ada"},
+			}, "default_params": map[string]interface{}{},
 		},
 		"deployment": map[string]interface{}{
 			"revision": "v2026.10.14-1", "provider": "openrouter", "model": "openai/gpt-4o-mini",
@@ -1048,13 +1055,13 @@ func schema9PromptJSON(key string) string {
 	return string(canonicalJSON(body))
 }
 
-func schema9DecisionJSON() string {
+func schema1DecisionJSON() string {
 	body := map[string]interface{}{
-		"schema_version": 9,
+		"schema_version": 1,
 		"project":        "sdkfixture",
 		"environment":    "production",
 		"prompt": map[string]interface{}{
-			"key": "decision_triage", "kind": "decision", "input_schema": []interface{}{}, "default_params": map[string]interface{}{},
+			"key": "decision_triage", "kind": "decision", "variables": []interface{}{}, "default_params": map[string]interface{}{},
 		},
 		"deployment": map[string]interface{}{
 			"revision": "v2026.10.14-1", "provider": "openrouter", "model": "typesafe/jev-1.13",
@@ -1064,7 +1071,9 @@ func schema9DecisionJSON() string {
 		"prompt_version": map[string]interface{}{
 			"prompt": "decision_triage", "number": 1, "kind": "decision", "engine": "liquid",
 			"decision": map[string]interface{}{
-				"questions": map[string]interface{}{"eligible": map[string]interface{}{"type": "noul"}},
+				"questions": map[string]interface{}{
+					"eligible": map[string]interface{}{"type": "noul", "instructions": "Decide for {{ name }}"},
+				},
 			},
 		},
 		"model": map[string]interface{}{

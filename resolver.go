@@ -58,17 +58,18 @@ type useCaseResolution struct {
 	PromptVersionNumber int
 	Engine              string
 
-	// Messages is set for a chat use case, Text for a text use case; an
-	// embedding use case has neither.
+	// Messages is set for a chat use case, Text for a text use case, and
+	// Decision for a decision use case; an embedding use case has none.
 	Messages []Message
 	Text     string
+	Decision map[string]interface{}
 
 	// Rendered reports whether Messages/Text went through the template engine.
 	// Without variables the raw templates come back unrendered, which is what
 	// prompt endpoint does too.
 	Rendered bool
 
-	InputSchema   []InputVariable
+	Variables     []Variable
 	PayloadPolicy *PayloadPolicy
 
 	Source Source
@@ -167,7 +168,7 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 		DeploymentID:       dep.ID,
 		DeploymentRevision: dep.Revision,
 		PromptNames:        snap.PromptNames(useCase),
-		InputSchema:        uc.InputSchema,
+		Variables:          uc.Variables,
 		PayloadPolicy:      uc.PayloadPolicy,
 		Source:             SourceManual,
 		Params:             mergeParams(uc.DefaultParams, dep.Params),
@@ -222,6 +223,8 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 			res.Messages = append([]Message(nil), version.Messages...)
 		case KindText:
 			res.Text = version.TextTemplate
+		case KindDecision:
+			res.Decision = cloneStringMap(version.Decision)
 		}
 	}
 	if model != nil {
@@ -253,6 +256,7 @@ func (r *useCaseResolution) Render(vars map[string]interface{}) (*useCaseResolut
 	clone := *r
 	clone.Messages = append([]Message(nil), r.Messages...)
 	clone.Tools = cloneMap(r.Tools)
+	clone.Decision = cloneStringMap(r.Decision)
 	if err := renderInto(&clone, vars); err != nil {
 		return nil, err
 	}
@@ -351,6 +355,30 @@ func cloneMap(in map[string]interface{}) map[string]interface{} {
 	return out
 }
 
+func cloneStringMap(in map[string]interface{}) map[string]interface{} {
+	cloned, _ := cloneValue(in).(map[string]interface{})
+	return cloned
+}
+
+func cloneValue(value interface{}) interface{} {
+	switch v := value.(type) {
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			out[key] = cloneValue(item)
+		}
+		return out
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			out[i] = cloneValue(item)
+		}
+		return out
+	default:
+		return value
+	}
+}
+
 // RenderMessages renders a chat resolution and returns just the messages.
 func (r *useCaseResolution) RenderMessages(vars map[string]interface{}) ([]Message, error) {
 	if r.Kind != KindChat || r.Messages == nil {
@@ -373,6 +401,18 @@ func (r *useCaseResolution) RenderText(vars map[string]interface{}) (string, err
 		return "", err
 	}
 	return rendered.Text, nil
+}
+
+// RenderDecision renders a decision resolution and returns the native decision payload.
+func (r *useCaseResolution) RenderDecision(vars map[string]interface{}) (map[string]interface{}, error) {
+	if r.Kind != KindDecision || r.Decision == nil {
+		return nil, ErrNoTemplate
+	}
+	rendered, err := r.Render(vars)
+	if err != nil {
+		return nil, err
+	}
+	return rendered.Decision, nil
 }
 
 func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
@@ -419,8 +459,51 @@ func renderInto(res *useCaseResolution, vars map[string]interface{}) error {
 		}
 		res.Text = text
 		res.Rendered = true
+	case KindDecision:
+		if res.Decision == nil {
+			return nil
+		}
+		rendered, err := renderValue(res.Decision, vars, engine)
+		if err != nil {
+			return err
+		}
+		res.Decision, _ = rendered.(map[string]interface{})
+		res.Rendered = true
 	}
 	return nil
+}
+
+func renderValue(value interface{}, vars map[string]interface{}, engine liquid.Engine) (interface{}, error) {
+	switch v := value.(type) {
+	case string:
+		rendered, err := liquid.Render(v, vars, engine)
+		if err != nil {
+			return nil, templateError(err)
+		}
+		return rendered, nil
+	case map[string]interface{}:
+		out := make(map[string]interface{}, len(v))
+		for key, item := range v {
+			rendered, err := renderValue(item, vars, engine)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = rendered
+		}
+		return out, nil
+	case []interface{}:
+		out := make([]interface{}, len(v))
+		for i, item := range v {
+			rendered, err := renderValue(item, vars, engine)
+			if err != nil {
+				return nil, err
+			}
+			out[i] = rendered
+		}
+		return out, nil
+	default:
+		return value, nil
+	}
 }
 
 func templateError(err *liquid.Error) error {
@@ -470,7 +553,7 @@ func LintTemplate(source string) []LintReason {
 	return out
 }
 
-// TemplateVariables lists the top-level input variables a template reads.
+// TemplateVariables lists the top-level variables a template reads.
 func TemplateVariables(source string) []string {
 	return liquid.Variables(source)
 }
