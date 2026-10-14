@@ -152,12 +152,59 @@ func TestSchemaEightReadableReferencesResolveWithoutResourceIDs(t *testing.T) {
 }
 
 func TestSchemaEightPromptVersionPinMustBePositive(t *testing.T) {
+	for name, value := range map[string]string{
+		"zero":     `0`,
+		"negative": `-1`,
+		"fraction": `1.5`,
+		"bool":     `false`,
+	} {
+		_, err := ParseUseCaseDocument([]byte(`{
+			"schema_version":8,
+			"prompts":{"chat":{"kind":"chat"}},
+			"deployments":{"chat":{"revision":"v2026.10.14-1","provider":"openrouter","model":"openai/gpt-4o-mini","prompt_version":` + value + `}}
+		}`))
+		if err == nil {
+			t.Fatalf("%s should reject invalid prompt_version", name)
+		}
+	}
+}
+
+func TestSchemaEightCompositeKeysMustMatchEmbeddedFields(t *testing.T) {
+	valid := `{
+		"schema_version":8,
+		"prompts":{"chat":{"kind":"chat"}},
+		"deployments":{"chat":{"revision":"v2026.10.14-1","provider":"openrouter","model":"openai/gpt-4o-mini","prompt_version":2}},
+		"prompt_versions":{"chat@2":{"prompt":"chat","number":2,"kind":"chat","messages":[{"role":"user","content":"ok"}]}},
+		"models":{"openrouter:openai/gpt-4o-mini":{"provider":"openrouter","model":"openai/gpt-4o-mini"}}
+	}`
+	if _, err := ParseUseCaseDocument([]byte(valid)); err != nil {
+		t.Fatalf("valid schema8 parse: %v", err)
+	}
+
+	cases := map[string]string{
+		"prompt mismatch":   strings.Replace(valid, `"prompt":"chat"`, `"prompt":"other"`, 1),
+		"number mismatch":   strings.Replace(valid, `"number":2`, `"number":99`, 1),
+		"provider mismatch": strings.Replace(valid, `"provider":"openrouter","model":"openai/gpt-4o-mini"}`, `"provider":"other","model":"openai/gpt-4o-mini"}`, 1),
+		"model mismatch":    strings.Replace(valid, `"model":"openai/gpt-4o-mini"}`, `"model":"openai/other"}`, 1),
+		"missing version":   strings.Replace(valid, `"chat@2"`, `"chat@3"`, 1),
+		"missing model":     strings.Replace(valid, `"openrouter:openai/gpt-4o-mini"`, `"openrouter:openai/other"`, 1),
+	}
+	for name, body := range cases {
+		if _, err := ParseUseCaseDocument([]byte(body)); err == nil {
+			t.Fatalf("%s should reject malformed schema8 document", name)
+		}
+	}
+}
+
+func TestSchemaEightRejectsLegacyResourceReferences(t *testing.T) {
 	_, err := ParseUseCaseDocument([]byte(`{
 		"schema_version":8,
 		"prompts":{"chat":{"kind":"chat"}},
-		"deployments":{"chat":{"revision":"v2026.10.14-1","provider":"openrouter","model":"openai/gpt-4o-mini","prompt_version":0}}
+		"deployments":{"chat":{"revision":"v2026.10.14-1","provider":"openrouter","model":"openai/gpt-4o-mini","prompt_version":1,"prompt_pins":{"default":"chat@1"}}},
+		"prompt_versions":{"chat@1":{"prompt":"chat","number":1,"kind":"chat","messages":[{"role":"user","content":"ok"}]}},
+		"models":{"openrouter:openai/gpt-4o-mini":{"provider":"openrouter","model":"openai/gpt-4o-mini"}}
 	}`))
-	if err == nil || !strings.Contains(err.Error(), "prompt_version must be a positive integer") {
-		t.Fatalf("expected positive prompt_version error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "legacy resource references") {
+		t.Fatalf("expected legacy resource reference rejection, got %v", err)
 	}
 }

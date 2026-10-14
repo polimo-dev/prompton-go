@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
+	"strings"
 )
 
 // SchemaVersion is the newest use-case document schema this SDK reads. A deployment revision is
@@ -174,16 +176,17 @@ type Deployment struct {
 
 // PromptVersion is an immutable prompt template.
 type PromptVersion struct {
-	ID           string                 `json:"id"`
-	PromptID     string                 `json:"prompt_id"`
-	Prompt       string                 `json:"prompt"`
-	Number       int                    `json:"number"`
-	Kind         Kind                   `json:"kind"`
-	Engine       string                 `json:"engine"`
-	Messages     []Message              `json:"messages"`
-	Decision     map[string]interface{} `json:"decision,omitempty"`
-	Tools        map[string]interface{} `json:"tools,omitempty"`
-	TextTemplate string                 `json:"text_template"`
+	ID               string                 `json:"id"`
+	PromptID         string                 `json:"prompt_id"`
+	PromptTemplateID string                 `json:"prompt_template_id"`
+	Prompt           string                 `json:"prompt"`
+	Number           int                    `json:"number"`
+	Kind             Kind                   `json:"kind"`
+	Engine           string                 `json:"engine"`
+	Messages         []Message              `json:"messages"`
+	Decision         map[string]interface{} `json:"decision,omitempty"`
+	Tools            map[string]interface{} `json:"tools,omitempty"`
+	TextTemplate     string                 `json:"text_template"`
 }
 
 // Model is a catalog entry: the provider and the provider-side model string the
@@ -279,6 +282,9 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if uc == nil {
 			continue
 		}
+		if version >= 8 && uc.ID != "" {
+			return nil, fmt.Errorf("prompton: schema8 prompt %s must not include id", key)
+		}
 		uc.Key = key
 		if uc.DefaultParams == nil {
 			uc.DefaultParams = map[string]interface{}{}
@@ -288,6 +294,17 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 	for key, dep := range raw.Deployments {
 		if dep == nil {
 			continue
+		}
+		if version >= 8 {
+			if dep.ID != "" || dep.ModelID != "" || dep.PromptPins != nil || dep.TemplatePins != nil {
+				return nil, fmt.Errorf("prompton: schema8 deployment %s must not include legacy resource references", key)
+			}
+			if dep.PromptVersion != nil && *dep.PromptVersion <= 0 {
+				return nil, fmt.Errorf("prompton: deployment %s prompt_version must be a positive integer", key)
+			}
+			if dep.Provider == "" || dep.Model == "" {
+				return nil, fmt.Errorf("prompton: schema8 deployment %s needs provider and model", key)
+			}
 		}
 		dep.UseCase = key
 		if dep.Params == nil {
@@ -303,9 +320,6 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 			dep.PromptPins = dep.TemplatePins
 		}
 		if dep.PromptPins == nil && dep.PromptVersion != nil {
-			if *dep.PromptVersion <= 0 {
-				return nil, fmt.Errorf("prompton: deployment %s prompt_version must be a positive integer", key)
-			}
 			dep.PromptPins = map[string]string{DefaultPrompt: fmt.Sprintf("%s@%d", key, *dep.PromptVersion)}
 		}
 		if dep.PromptPins == nil {
@@ -317,6 +331,14 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if pv == nil {
 			continue
 		}
+		if version >= 8 {
+			if pv.ID != "" || pv.PromptID != "" || pv.PromptTemplateID != "" {
+				return nil, fmt.Errorf("prompton: schema8 prompt_version %s must not include legacy ids", id)
+			}
+			if err := validateSchema8PromptVersionKey(id, pv); err != nil {
+				return nil, err
+			}
+		}
 		if version < 8 && pv.ID == "" {
 			pv.ID = id
 		}
@@ -325,6 +347,14 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 	for id, m := range raw.Models {
 		if m == nil {
 			continue
+		}
+		if version >= 8 {
+			if m.ID != "" || m.ModelID != "" {
+				return nil, fmt.Errorf("prompton: schema8 model %s must not include legacy ids", id)
+			}
+			if err := validateSchema8ModelKey(id, m); err != nil {
+				return nil, err
+			}
 		}
 		if version < 8 && m.ID == "" {
 			m.ID = id
@@ -337,7 +367,55 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		}
 		snap.Models[id] = m
 	}
+	if version >= 8 {
+		if err := validateSchema8References(snap); err != nil {
+			return nil, err
+		}
+	}
 	return snap, nil
+}
+
+func validateSchema8PromptVersionKey(key string, pv *PromptVersion) error {
+	prompt, rawNumber, ok := strings.Cut(key, "@")
+	if !ok || prompt == "" || rawNumber == "" {
+		return fmt.Errorf("prompton: schema8 prompt_versions key %q must look like prompt@number", key)
+	}
+	number, err := strconv.Atoi(rawNumber)
+	if err != nil || number <= 0 {
+		return fmt.Errorf("prompton: schema8 prompt_versions key %q must use a positive number", key)
+	}
+	if pv.Prompt != prompt || pv.Number != number {
+		return fmt.Errorf("prompton: schema8 prompt_versions key %q must match prompt and number fields", key)
+	}
+	return nil
+}
+
+func validateSchema8ModelKey(key string, m *Model) error {
+	provider, model, ok := strings.Cut(key, ":")
+	if !ok || provider == "" || model == "" || m.Provider != provider || m.Model != model {
+		return fmt.Errorf("prompton: schema8 models key %q must match provider and model fields", key)
+	}
+	return nil
+}
+
+func validateSchema8References(snap *UseCaseDocument) error {
+	for key, dep := range snap.Deployments {
+		if snap.Models[dep.ModelID] == nil {
+			return fmt.Errorf("prompton: schema8 deployment %s references unknown model %s", key, dep.ModelID)
+		}
+		uc := snap.UseCases[key]
+		if uc != nil && uc.Kind == KindEmbedding {
+			continue
+		}
+		if dep.PromptVersion == nil || *dep.PromptVersion <= 0 {
+			return fmt.Errorf("prompton: deployment %s prompt_version must be a positive integer", key)
+		}
+		versionKey := fmt.Sprintf("%s@%d", key, *dep.PromptVersion)
+		if snap.PromptVersions[versionKey] == nil {
+			return fmt.Errorf("prompton: schema8 deployment %s references unknown prompt version %s", key, versionKey)
+		}
+	}
+	return nil
 }
 
 // PromptNames lists the prompt names the live revision of a use case pins.
