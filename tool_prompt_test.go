@@ -98,3 +98,66 @@ func TestMessageSlotIsRejectedForRawAndLiquidPrompts(t *testing.T) {
 		}
 	}
 }
+
+func TestSchemaEightReadableReferencesResolveWithoutResourceIDs(t *testing.T) {
+	snap, err := ParseUseCaseDocument([]byte(`{
+		"schema_version":8,
+		"project":"p",
+		"environment":"staging",
+		"prompts":{
+			"support_reply":{"kind":"chat","default_params":{"max_tokens":100},"input_schema":[]},
+			"triage":{"kind":"chat","default_params":{},"input_schema":[]}
+		},
+		"deployments":{
+			"support_reply":{"revision":"v2026.10.14-1","provider":"openrouter","model":"google/gemini-3.8-flash","prompt_version":2,"params":{"temperature":0.3},"provider_options":{"allow_fallbacks":false}},
+			"triage":{"revision":"v2026.10.14-2","provider":"anthropic","model":"google/gemini-3.8-flash","prompt_version":2}
+		},
+		"prompt_versions":{
+			"support_reply@2":{"prompt":"support_reply","number":2,"kind":"chat","engine":"liquid","messages":[{"role":"user","content":"Reply to {{ question }}"}]},
+			"triage@2":{"prompt":"triage","number":2,"kind":"chat","engine":"liquid","messages":[{"role":"system","content":"Classify only"}]}
+		},
+		"models":{
+			"openrouter:google/gemini-3.8-flash":{"provider":"openrouter","model":"google/gemini-3.8-flash","provider_options":{"only":["Google"]}},
+			"anthropic:google/gemini-3.8-flash":{"provider":"anthropic","model":"google/gemini-3.8-flash","provider_options":{"routing":"direct"}}
+		}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseUseCaseDocument: %v", err)
+	}
+
+	support, err := resolveSnapshot(snap, "support_reply", WithVariables(map[string]interface{}{"question": "Ada"}))
+	if err != nil {
+		t.Fatalf("resolve support_reply: %v", err)
+	}
+	triage, err := resolveSnapshot(snap, "triage")
+	if err != nil {
+		t.Fatalf("resolve triage: %v", err)
+	}
+
+	if support.DeploymentID != "" || support.PromptVersionID != "" || support.ModelID != "" {
+		t.Fatalf("schema8 resource ids should stay empty: %+v", support)
+	}
+	if support.PromptVersionNumber != 2 || support.Messages[0].Content != "Reply to Ada" {
+		t.Fatalf("schema8 prompt version did not resolve/render: %+v", support)
+	}
+	if support.Provider != "openrouter" || support.Model != "google/gemini-3.8-flash" {
+		t.Fatalf("schema8 model did not resolve: %+v", support)
+	}
+	if support.ProviderOptions["allow_fallbacks"] != false || support.ProviderOptions["only"] == nil {
+		t.Fatalf("schema8 provider options did not merge: %#v", support.ProviderOptions)
+	}
+	if triage.Provider != "anthropic" || triage.ProviderOptions["routing"] != "direct" {
+		t.Fatalf("provider-scoped model lookup collided: %+v", triage)
+	}
+}
+
+func TestSchemaEightPromptVersionPinMustBePositive(t *testing.T) {
+	_, err := ParseUseCaseDocument([]byte(`{
+		"schema_version":8,
+		"prompts":{"chat":{"kind":"chat"}},
+		"deployments":{"chat":{"revision":"v2026.10.14-1","provider":"openrouter","model":"openai/gpt-4o-mini","prompt_version":0}}
+	}`))
+	if err == nil || !strings.Contains(err.Error(), "prompt_version must be a positive integer") {
+		t.Fatalf("expected positive prompt_version error, got %v", err)
+	}
+}

@@ -4,6 +4,18 @@ All notable changes to this SDK are recorded here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses
 [semantic versioning](https://semver.org/spec/v2.0.0.html).
 
+## 0.7.0
+
+- Added schema8 prompt documents with readable resource references. Config now resolves
+  `prompt@version` prompt versions and `provider:model` model keys while keeping legacy schema4-7
+  documents loadable.
+- Schema8 deployments no longer need public deployment, prompt version or model UUIDs. Deprecated
+  local evidence fields stay empty when the document does not carry ids, while readable
+  `deployment_revision`, `template`, `prompt_version_number`, `provider` and `model` remain
+  available for monitoring logs.
+- Validates schema8 `prompt_version` pins as positive integers and keeps prompt-version lookup
+  scoped by prompt key so equal version numbers on different prompts do not collide.
+
 ## 0.6.0
 
 - Breaking request contract: monitoring logs now send readable prompt evidence only: `deployment_revision`,

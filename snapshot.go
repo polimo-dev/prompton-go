@@ -8,8 +8,8 @@ import (
 
 // SchemaVersion is the newest use-case document schema this SDK reads. A deployment revision is
 // a pin — one model plus one pinned prompt version per prompt name — not a
-// router: schema 7 adds provider-visible chat tools and full native messages.
-const SchemaVersion = 7
+// router: schema 8 replaces public resource UUID references with readable keys.
+const SchemaVersion = 8
 
 // Kind is what a use case calls: a chat completion, a text completion, or an
 // embedding.
@@ -18,6 +18,7 @@ type Kind string
 // The three use case kinds.
 const (
 	KindChat      Kind = "chat"
+	KindDecision  Kind = "decision"
 	KindText      Kind = "text"
 	KindEmbedding Kind = "embedding"
 )
@@ -162,6 +163,9 @@ type Deployment struct {
 	UseCase         string                 `json:"-"`
 	Revision        string                 `json:"revision"`
 	ModelID         string                 `json:"model_id"`
+	Provider        string                 `json:"provider"`
+	Model           string                 `json:"model"`
+	PromptVersion   *int                   `json:"prompt_version"`
 	Params          map[string]interface{} `json:"params"`
 	ProviderOptions map[string]interface{} `json:"provider_options"`
 	PromptPins      map[string]string      `json:"prompt_pins"`
@@ -172,9 +176,12 @@ type Deployment struct {
 type PromptVersion struct {
 	ID           string                 `json:"id"`
 	PromptID     string                 `json:"prompt_id"`
+	Prompt       string                 `json:"prompt"`
 	Number       int                    `json:"number"`
+	Kind         Kind                   `json:"kind"`
 	Engine       string                 `json:"engine"`
 	Messages     []Message              `json:"messages"`
+	Decision     map[string]interface{} `json:"decision,omitempty"`
 	Tools        map[string]interface{} `json:"tools,omitempty"`
 	TextTemplate string                 `json:"text_template"`
 }
@@ -185,6 +192,7 @@ type Model struct {
 	ID              string                 `json:"id"`
 	Provider        string                 `json:"provider"`
 	ModelID         string                 `json:"model_id"`
+	Model           string                 `json:"model"`
 	DisplayName     string                 `json:"display_name"`
 	Metadata        map[string]interface{} `json:"metadata"`
 	ProviderOptions map[string]interface{} `json:"provider_options"`
@@ -288,8 +296,17 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if dep.ProviderOptions == nil {
 			dep.ProviderOptions = map[string]interface{}{}
 		}
+		if dep.ModelID == "" && dep.Provider != "" && dep.Model != "" {
+			dep.ModelID = dep.Provider + ":" + dep.Model
+		}
 		if dep.PromptPins == nil {
 			dep.PromptPins = dep.TemplatePins
+		}
+		if dep.PromptPins == nil && dep.PromptVersion != nil {
+			if *dep.PromptVersion <= 0 {
+				return nil, fmt.Errorf("prompton: deployment %s prompt_version must be a positive integer", key)
+			}
+			dep.PromptPins = map[string]string{DefaultPrompt: fmt.Sprintf("%s@%d", key, *dep.PromptVersion)}
 		}
 		if dep.PromptPins == nil {
 			dep.PromptPins = map[string]string{}
@@ -300,7 +317,7 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if pv == nil {
 			continue
 		}
-		if pv.ID == "" {
+		if version < 8 && pv.ID == "" {
 			pv.ID = id
 		}
 		snap.PromptVersions[id] = pv
@@ -309,8 +326,11 @@ func ParseUseCaseDocument(data []byte) (*UseCaseDocument, error) {
 		if m == nil {
 			continue
 		}
-		if m.ID == "" {
+		if version < 8 && m.ID == "" {
 			m.ID = id
+		}
+		if m.ModelID == "" {
+			m.ModelID = m.Model
 		}
 		if m.ProviderOptions == nil {
 			m.ProviderOptions = map[string]interface{}{}

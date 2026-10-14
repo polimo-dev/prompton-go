@@ -873,7 +873,7 @@ func TestExportUseCaseDocumentProducesALoadableBundle(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionReadsFiveThroughSeven(t *testing.T) {
+func TestSchemaVersionReadsFiveThroughEight(t *testing.T) {
 	cases := []struct {
 		name    string
 		body    string
@@ -882,7 +882,7 @@ func TestSchemaVersionReadsFiveThroughSeven(t *testing.T) {
 	}{
 		{name: "missing", body: `{"use_cases":{}}`, missing: true},
 		{name: "v3", body: `{"schema_version":3,"use_cases":{}}`, version: 3},
-		{name: "future", body: `{"schema_version":8,"use_cases":{}}`, version: 8},
+		{name: "future", body: `{"schema_version":9,"use_cases":{}}`, version: 9},
 	}
 	for _, tc := range cases {
 		_, err := ParseUseCaseDocument([]byte(tc.body))
@@ -895,7 +895,7 @@ func TestSchemaVersionReadsFiveThroughSeven(t *testing.T) {
 	if _, err := ParseUseCaseDocument([]byte(`{"schema_version":4,"use_cases":{}}`)); err != nil {
 		t.Fatalf("schema_version 4 should be accepted: %v", err)
 	}
-	for _, version := range []int{5, 6, 7} {
+	for _, version := range []int{5, 6, 7, 8} {
 		if _, err := ParseUseCaseDocument([]byte(fmt.Sprintf(`{"schema_version":%d,"use_cases":{}}`, version))); err != nil {
 			t.Fatalf("schema_version %d should be accepted: %v", version, err)
 		}

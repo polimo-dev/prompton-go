@@ -210,11 +210,14 @@ func resolveSnapshot(snap *UseCaseDocument, useCase string, opts ...UseCaseOptio
 	}
 
 	if version != nil {
+		if version.Kind != "" {
+			res.Kind = version.Kind
+		}
 		res.PromptVersionID = version.ID
 		res.PromptVersionNumber = version.Number
 		res.Engine = version.Engine
 		res.Tools = cloneMap(version.Tools)
-		switch uc.Kind {
+		switch res.Kind {
 		case KindChat:
 			res.Messages = append([]Message(nil), version.Messages...)
 		case KindText:
